@@ -38,7 +38,7 @@ parser.add_argument('--resume', default=None, type=str,
 parser.add_argument('--start_iter', default=-1, type=int,
                     help='Resume training at this iter. If this is -1, the iteration will be'\
                          'determined from the file name.')
-parser.add_argument('--num_workers', default=4, type=int,
+parser.add_argument('--num_workers', default=os.cpu_count(), type=int,
                     help='Number of workers used in dataloading')
 parser.add_argument('--cuda', default=True, type=str2bool,
                     help='Use CUDA to train model')
@@ -256,6 +256,7 @@ def train():
     time_avg = MovingAverage()
 
     global loss_types # Forms the print order
+                      # TODO: global command can modify global variable inside of the function.
     loss_avgs  = { k: MovingAverage(100) for k in loss_types }
 
     print('Begin training!')
@@ -337,6 +338,16 @@ def train():
                     
                     print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || ETA: %s || timer: %.3f')
                             % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
+
+                    # Loss Key:
+                    #  - B: Box Localization Loss
+                    #  - C: Class Confidence Loss
+                    #  - M: Mask Loss
+                    #  - P: Prototype Loss
+                    #  - D: Coefficient Diversity Loss
+                    #  - E: Class Existence Loss
+                    #  - S: Semantic Segmentation Loss
+                    #  - T: Total loss
 
                 if args.log:
                     precision = 5
@@ -502,3 +513,9 @@ def setup_eval():
 
 if __name__ == '__main__':
     train()
+
+# code snippet
+# train
+# python -W ignore train.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=5
+# eval, output img
+# python -W ignore eval.py --trained_model=weights/yolact_base_112_112_interrupt.pth --score_threshold=0.15 --top_k=15 --image=/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_train/JPEGImages/1500_curve_3_frame0551.jpg:output_metal_image_2.png

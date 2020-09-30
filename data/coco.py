@@ -12,6 +12,7 @@ import random
 
 def get_label_map():
     if cfg.dataset.label_map is None:
+        print({x+1: x+1 for x in range(len(cfg.dataset.class_names))})
         return {x+1: x+1 for x in range(len(cfg.dataset.class_names))}
     else:
         return cfg.dataset.label_map 

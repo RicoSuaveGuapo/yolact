@@ -55,6 +55,13 @@ COCO_LABEL_MAP = { 1:  1,  2:  2,  3:  3,  4:  4,  5:  5,  6:  6,  7:  7,  8:  8
                   82: 73, 84: 74, 85: 75, 86: 76, 87: 77, 88: 78, 89: 79, 90: 80}
 
 
+# TODO:
+# ('U150_curve','U150_ok','U100_curve','U100_ok','A30_curve','A30_ok')
+METAL_CLASSES = ('U100_curve','U100_ok')
+# Start from 1. Map input labels from 1 and increase sequentially.
+METAL_LABEL_MAP = {3:1,4:2}
+# {i:i for i in range(1,7)}
+
 
 # ----------------------- CONFIG CLASS ----------------------- #
 
@@ -127,6 +134,20 @@ dataset_base = Config({
     # If not specified, this just assumes category ids start at 1 and increase sequentially.
     'label_map': None
 })
+
+
+# TODO: Custom Dataset
+metal2020_dataset = dataset_base.copy({
+    'name': 'Metal Curve 2020',
+    'train_images': '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_train',
+    'train_info':   '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_train/annotations.json',
+    'valid_images': '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_val',
+    'valid_info':   '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_val/annotations.json',
+    'has_gt': True,
+    'class_names': METAL_CLASSES,
+    'label_map': METAL_LABEL_MAP
+})
+
 
 coco2014_dataset = dataset_base.copy({
     'name': 'COCO 2014',
@@ -657,8 +678,11 @@ yolact_base_config = coco_base_config.copy({
     'name': 'yolact_base',
 
     # Dataset stuff
-    'dataset': coco2017_dataset,
-    'num_classes': len(coco2017_dataset.class_names) + 1,
+    # TODO: Original
+    # 'dataset': coco2017_dataset,
+    # 'num_classes': len(coco2017_dataset.class_names) + 1,
+    'dataset': metal2020_dataset,
+    'num_classes': len(metal2020_dataset.class_names) + 1,
 
     # Image Size
     'max_size': 550,
