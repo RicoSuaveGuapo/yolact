@@ -57,10 +57,12 @@ COCO_LABEL_MAP = { 1:  1,  2:  2,  3:  3,  4:  4,  5:  5,  6:  6,  7:  7,  8:  8
 
 # TODO:
 # ('U150_curve','U150_ok','U100_curve','U100_ok','A30_curve','A30_ok')
-METAL_CLASSES = ('U100_curve','U100_ok')
+# ('U100_curve','U100_ok')
+METAL_CLASSES = ('U150_curve','U150_ok','U100_curve','U100_ok','A30_curve','A30_ok')
 # Start from 1. Map input labels from 1 and increase sequentially.
-METAL_LABEL_MAP = {3:1,4:2}
+METAL_LABEL_MAP = {i:i for i in range(1,7)}
 # {i:i for i in range(1,7)}
+# {3:1,4:2}
 
 
 # ----------------------- CONFIG CLASS ----------------------- #
@@ -143,6 +145,17 @@ metal2020_dataset = dataset_base.copy({
     'train_info':   '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_train/annotations.json',
     'valid_images': '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_val',
     'valid_info':   '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_val/annotations.json',
+    'has_gt': True,
+    'class_names': METAL_CLASSES,
+    'label_map': METAL_LABEL_MAP
+})
+
+metal2020_server_dataset = dataset_base.copy({
+    'name': 'Metal Curve 2020',
+    'train_images': '/home/aiuser/Job/yolact/data/metal_data/data/clean_data_20frames/U100/annotations/yolact_train',
+    'train_info':   '/home/aiuser/Job/yolact/data/metal_data/data/clean_data_20frames/U100/annotations/yolact_train/annotations.json',
+    'valid_images': '/home/aiuser/Job/yolact/data/metal_data/data/clean_data_20frames/U100/annotations/yolact_val',
+    'valid_info':   '/home/aiuser/Job/yolact/data/metal_data/data/clean_data_20frames/U100/annotations/yolact_val/annotations.json',
     'has_gt': True,
     'class_names': METAL_CLASSES,
     'label_map': METAL_LABEL_MAP

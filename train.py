@@ -512,10 +512,20 @@ def setup_eval():
     eval_script.parse_args(['--no_bar', '--max_images='+str(args.validation_size)])
 
 if __name__ == '__main__':
-    train()
+    # train()
 
 # code snippet
 # train
 # python -W ignore train.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=5
 # eval, output img
-# python -W ignore eval.py --trained_model=weights/yolact_base_112_112_interrupt.pth --score_threshold=0.15 --top_k=15 --image=/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_train/JPEGImages/1500_curve_3_frame0551.jpg:output_metal_image_2.png
+# make sure that the image is cropped
+# python -W ignore eval.py --trained_model=weights/yolact_base_61_2144_interrupt.pth --score_threshold=0.15 --top_k=15 --image=/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_train/JPEGImages/mod_1500_curve_3_frame0551.jpg:metal_img.png --config yolact_base_config
+# Evaluate on a folder
+    from time import time
+    counts = os.listdir('/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_val/JPEGImages')
+    start = time()
+    os.system("python -W ignore eval.py --trained_model=weights/yolact_base_42934_128802_interrupt.pth --score_threshold=0.15 --top_k=15 --images=/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotations/yolact_val/JPEGImages:/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/predictions/val")
+    print(f'Spends {time()-start:.2f} sec')
+    print(f'--- {counts/(time()-start):.2f} fps ---')
+# resume training
+# python -W ignore train.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=5 --resume weights/yolact_base_267_123_interrupt.pth
