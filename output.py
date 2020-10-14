@@ -27,10 +27,10 @@ out_name = 'metal_img.png'
 # python -W ignore train.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=5 --resume weights/yolact_base_267_123_interrupt.pth
 
 # Quantitative evaluation
-os.system(f"python -W ignore eval.py --trained_model={pth_path} --config {config}")
+# os.system(f"python -W ignore eval.py --trained_model={pth_path} --config {config} --display_fps")
 #
 # Output json file
-# os.system(f"python -W ignore eval.py --trained_model={pth_path} --output_coco_json")
+os.system(f"python -W ignore eval.py --trained_model={pth_path} --output_coco_json")
 # eval, output img
 # os.system(f'python -W ignore eval.py --trained_model={pth_path} --score_threshold=0.15 --top_k=15 --image={img_path}:{out_name} --config {config}')
 

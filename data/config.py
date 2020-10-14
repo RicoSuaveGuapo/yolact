@@ -473,6 +473,7 @@ coco_base_config = Config({
     'lr_warmup_until': 500,
 
     # The terms to scale the respective loss by
+    # NOTE
     'conf_alpha': 1,
     'bbox_alpha': 1.5,
     'mask_alpha': 0.4 / 256 * 140 * 140, # Some funky equation. Don't worry about it.
