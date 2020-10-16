@@ -1,4 +1,6 @@
 import json
+import pickle
+from eval import *
 
 # val total 1051 images
 
@@ -32,6 +34,8 @@ with open('/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/U100/annotati
 # from the code of 
 # detections.add_bbox(image_id, classes[i], boxes[i,:],   box_scores[i])
 # detections.add_mask(image_id, classes[i], masks[i,:,:], mask_scores[i])
+# scores = [scores, scores * maskiou_p]
+# scores here is the confident level
 
 # bbox
 with open('results/bbox_detections.json') as json_file:
@@ -50,4 +54,37 @@ with open('results/mask_detections.json') as json_file:
 
 # print(gt_bbox['categories'])
 # print(len(pred_bbox))
-print(pred_mask[1])
+# print(pred_mask[1])
+
+with open('results/ap_data.pkl','rb') as pkl:
+     data = pickle.load(pkl)
+
+# ap_data.pkl structure
+# 
+# 'box', 'mask'
+# IoU (50,55,...95) total 10
+# classes, total 6
+# A30_curve, A30_ok, U100_curve, U100_ok, U150_curve, U150_ok
+
+recalls, precisions, scores = data['box'][0][2].get_recall()
+
+score_sep = []
+pred_sep = []
+recall_sep =[]
+for i in range(0,5):
+    score_gt = [score for score in scores if score >= (i+5)*0.1][-1]
+    recall_gt = [recalls[j] for j, score in enumerate(scores) if score >= (i+5)*0.1][-1]
+    pred_gt = [precisions[j] for j, score in enumerate(scores) if score >= (i+5)*0.1][-1]
+    score_sep.append(score_gt)
+    recall_sep.append(recall_gt)
+    pred_sep.append(pred_gt)
+
+score_sep = [round(score,3) for score in score_sep]
+recall_sep = [round(recall,3) for recall in recall_sep]
+pred_sep = [round(pred,3) for pred in pred_sep]
+print(f'Confidence: {score_sep}')
+print(f'Recall    : {recall_sep}')
+print(f'Precision : {pred_sep}')
+
+# threshold_bbox = [bbox for bbox in pred_bbox if bbox['score'] > 0.9]
+# print(len(threshold_bbox))

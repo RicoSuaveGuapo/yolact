@@ -530,6 +530,38 @@ class APDataObject:
     def is_empty(self) -> bool:
         return len(self.data_points) == 0 and self.num_gt_positives == 0
 
+    def get_recall(self) ->list:
+
+        if self.num_gt_positives == 0:
+            print('no ground truth!')
+            return 0
+        self.data_points.sort(key=lambda x: -x[0])
+
+        # NOTE
+        precisions = []
+        recalls    = []
+        num_true  = 0
+        num_false = 0
+
+        # Compute the precision-recall curve. The x axis is recalls and the y axis precisions.
+
+        scores = []
+        for datum in self.data_points:
+    # datum[1] is whether the detection a true or false positive
+            scores += [datum[0]]
+            if datum[1]: num_true += 1
+            else: num_false += 1
+            
+            precision = num_true / (num_true + num_false)
+            recall    = num_true / self.num_gt_positives
+
+            precisions.append(precision)
+            recalls.append(recall)
+            
+        return recalls, precisions, scores
+        
+
+        
     def get_ap(self) -> float:
         """ Warning: result not cached. """
 
@@ -538,7 +570,7 @@ class APDataObject:
 
         # Sort descending by score
         self.data_points.sort(key=lambda x: -x[0])
-
+        # NOTE
         precisions = []
         recalls    = []
         num_true  = 0

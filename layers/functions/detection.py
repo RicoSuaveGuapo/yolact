@@ -30,6 +30,7 @@ class Detect(object):
         self.use_fast_nms = False
 
     def __call__(self, predictions, net):
+        # NOTE
         """
         Args:
              loc_data: (tensor) Loc preds from loc layers
