@@ -161,6 +161,17 @@ metal2020_server_dataset = dataset_base.copy({
     'label_map': METAL_LABEL_MAP
 })
 
+metal2020_server_dgx_dataset = dataset_base.copy({
+    'name': 'Metal Curve 2020',
+    'train_images': '/nfs/Workspace/clean_data_20frames/U100/annotations/yolact_train',
+    'train_info':   '/nfs/Workspace/clean_data_20frames/U100/annotations/yolact_train/annotations.json',
+    'valid_images': '/nfs/Workspace/clean_data_20frames/U100/annotations/yolact_val',
+    'valid_info':   '/nfs/Workspace/clean_data_20frames/U100/annotations/yolact_val/annotations.json',
+    'has_gt': True,
+    'class_names': METAL_CLASSES,
+    'label_map': METAL_LABEL_MAP
+})
+
 
 coco2014_dataset = dataset_base.copy({
     'name': 'COCO 2014',
