@@ -232,6 +232,7 @@ def train():
     # Initialize everything
     if not cfg.freeze_bn: yolact_net.freeze_bn() # Freeze bn so we don't kill our means
     yolact_net(torch.zeros(1, 3, cfg.max_size, cfg.max_size).cuda())
+
     if not cfg.freeze_bn: yolact_net.freeze_bn(True)
 
     # loss counters
@@ -512,5 +513,20 @@ def setup_eval():
     eval_script.parse_args(['--no_bar', '--max_images='+str(args.validation_size)])
 
 if __name__ == '__main__':
+    # img = torch.zeros(1, 3, 300, 300)
+    # images, targets, masks, num_crowds = prepare_data((img[0,...],(img[0,...],img[0,...],img[0,...])))
+
+    # compute_validation_loss
+    
+    # yolact_net = Yolact()
+    # net = yolact_net
+    # net.train()
+    
+
+    from torch.utils.tensorboard import SummaryWriter
+    # writer = SummaryWriter('runs/test_1')
+    # writer.add_graph(net, images)
+    # writer.close()
+
     train()
 

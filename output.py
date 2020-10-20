@@ -38,9 +38,9 @@ out_name = 'metal_img.png'
 # nohup python -W ignore train.py --config=yolact_base_config --batch_size=24 --batch_alloc=24 --dataset metal2020_server_dataset --validation_epoch=16 > train.log 2>&1 &
 
 # Server DGX
-# python -W ignore train.py --config=yolact_base_config --batch_size=48 --batch_alloc=24, 24 --dataset metal2020_server_dgx_dataset --validation_epoch=16
+# os.system("python -W ignore train.py --config=yolact_base_config --batch_size=48 --batch_alloc=24, 24 --dataset metal2020_server_dgx_dataset --validation_epoch=16")
 # Nohup
-# nohup python -W ignore train.py --config=yolact_base_config --batch_size=48 --batch_alloc=24, 24 --dataset metal2020_server_dgx_dataset --validation_epoch=16 > train.log 2>&1 &
+os.system("nohup python -W ignore train.py --resume --config=yolact_base_config --batch_size=48 --batch_alloc=24, 24 --dataset metal2020_server_dgx_dataset --validation_epoch=16 > train.log 2>&1 & ")
 
 # resume training
 # python -W ignore train.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=5 --resume weights/yolact_base_267_123_interrupt.pth
