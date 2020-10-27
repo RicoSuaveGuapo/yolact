@@ -547,7 +547,7 @@ class APDataObject:
 
         scores = []
         for datum in self.data_points:
-    # datum[1] is whether the detection a true or false positive
+        # datum[1] is whether the detection a true or false positive
             scores += [datum[0]]
             if datum[1]: num_true += 1
             else: num_false += 1
