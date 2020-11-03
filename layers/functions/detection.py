@@ -206,7 +206,9 @@ class Detect(object):
             if cls_scores.size(0) == 0:
                 continue
             
-            preds = torch.cat([boxes[conf_mask], cls_scores[:, None]], dim=1).cpu().numpy()
+            # DANGER: I modified the following
+            # preds = torch.cat([boxes[conf_mask], cls_scores[:, None]], dim=1).cpu().numpy()
+            preds = torch.cat([boxes[conf_mask], cls_scores[:, None]], dim=1).cpu().detach().numpy()
             keep = cnms(preds, iou_threshold)
             keep = torch.Tensor(keep, device=boxes.device).long()
 

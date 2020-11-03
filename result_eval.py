@@ -151,7 +151,7 @@ def ap_plot(data,output_path,classes):
             precision_curve, = ax.plot(score_sep, pred_sep, marker='o',label='Precision')
             ax.set_xlabel('Confidence')
             ax.set_ylabel('Recll/Precision')
-            plt.legend(handles=[recall_curve,precision_curve],loc='lower right')
+            plt.legend(handles=[recall_curve,precision_curve],loc='right')
             plt.savefig(f'/home/rico-li/Job/豐興鋼鐵/EDA/{clss}_AP_curve.png')
             # plt.show()
             with open(output_path, 'a') as f:
@@ -171,16 +171,16 @@ def ap_plot(data,output_path,classes):
 
 if __name__ == "__main__":
     classes = ['U150_curve','U150_ok','U100_curve','U100_ok','A30_curve','A30_ok']
-    output_path = '/home/rico-li/Job/豐興鋼鐵/EDA/Confidence_Recall_Precison_normal_NMS.txt'
-    # with open('/home/rico-li/Job/豐興鋼鐵/EDA/1026_results/ap_data_normal_NMS.pkl','rb') as pkl:
-    #     data = pickle.load(pkl)
-    # ap_plot(data=data,output_path=output_path,classes=classes)
+    output_path = '/home/rico-li/Job/豐興鋼鐵/EDA/Confidence_Recall_Precison_A30only.txt'
+    with open('/home/rico-li/Job/豐興鋼鐵/EDA/1102_results/ap_data_A30_trainA30.pkl','rb') as pkl:
+        data = pickle.load(pkl)
+    ap_plot(data=data,output_path=output_path,classes=classes)
 
-    pkl_1_path = '/home/rico-li/Job/豐興鋼鐵/EDA/1026_results/ap_data_original.pkl'
-    pkl_2_path = '/home/rico-li/Job/豐興鋼鐵/EDA/1026_results/ap_data_lossMod.pkl'
-    with open(pkl_1_path,'rb') as pkl:
-        data_1 = pickle.load(pkl)
-    with open(pkl_2_path,'rb') as pkl:
-        data_2 = pickle.load(pkl)
-    data = [data_1, data_2]
-    ap_compare_plot(data=data,output_path=output_path,classes=classes,pkl_1_name='Original',pkl_2_name='Modified')
+    # pkl_1_path = '/home/rico-li/Job/豐興鋼鐵/EDA/1026_results/ap_data_original.pkl'
+    # pkl_2_path = '/home/rico-li/Job/豐興鋼鐵/EDA/1026_results/ap_data_lossMod.pkl'
+    # with open(pkl_1_path,'rb') as pkl:
+    #     data_1 = pickle.load(pkl)
+    # with open(pkl_2_path,'rb') as pkl:
+    #     data_2 = pickle.load(pkl)
+    # data = [data_1, data_2]
+    # ap_compare_plot(data=data,output_path=output_path,classes=classes,pkl_1_name='Original',pkl_2_name='Modified')

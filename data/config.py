@@ -141,10 +141,10 @@ dataset_base = Config({
 # TODO: Custom Dataset
 metal2020_dataset = dataset_base.copy({
     'name': 'Metal Curve 2020',
-    'train_images': '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/yolact_train',
-    'train_info':   '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/yolact_train/annotations.json',
-    'valid_images': '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/yolact_val',
-    'valid_info':   '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/yolact_val/annotations.json',
+    'train_images': '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/A30/annotations/yolact_train',
+    'train_info':   '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/A30/annotations/yolact_train/annotations.json',
+    'valid_images': '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/A30/annotations/yolact_val',
+    'valid_info':   '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/A30/annotations/yolact_val/annotations.json',
     'has_gt': True,
     'class_names': METAL_CLASSES,
     'label_map': METAL_LABEL_MAP

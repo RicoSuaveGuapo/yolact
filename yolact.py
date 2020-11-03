@@ -396,9 +396,9 @@ class Yolact(nn.Module):
         - pred_aspect_ratios: A list of lists of aspect ratios with len(selected_layers) (see PredictionModule)
     """
 
-    def __init__(self):
+    def __init__(self, test_code=False):
         super().__init__()
-
+        self.test_code = test_code
         self.backbone = construct_backbone(cfg.backbone)
 
         if cfg.freeze_bn:
@@ -672,53 +672,77 @@ class Yolact(nn.Module):
                     
                 else:
                     pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
-
-            return self.detect(pred_outs, self)
+            if not self.test_code:
+                return self.detect(pred_outs, self)
+            else:
+                return self.detect(pred_outs, self)[0]['detection']['box']
 
 
 
 
 # Some testing code
 if __name__ == '__main__':
-    from utils.functions import init_console
-    init_console()
+    # from utils.functions import init_console
+    # init_console()
 
-    # Use the first argument to set the config if you want
-    import sys
-    if len(sys.argv) > 1:
-        from data.config import set_cfg
-        set_cfg(sys.argv[1])
+    # # Use the first argument to set the config if you want
+    # import sys
+    # if len(sys.argv) > 1:
+    #     from data.config import set_cfg
+    #     set_cfg(sys.argv[1])
 
-    net = Yolact()
-    net.train()
-    net.init_weights(backbone_path='weights/' + cfg.backbone.path)
+    # net = Yolact()
+    # net.train()
+    # net.init_weights(backbone_path='weights/' + cfg.backbone.path)
 
-    # GPU
-    net = net.cuda()
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # # GPU
+    # net = net.cuda()
+    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
-    x = torch.zeros((1, 3, cfg.max_size, cfg.max_size))
-    y = net(x)
+    # x = torch.zeros((1, 3, cfg.max_size, cfg.max_size))
+    # y = net(x)
 
-    for p in net.prediction_layers:
-        print(p.last_conv_size)
+    # for p in net.prediction_layers:
+    #     print(p.last_conv_size)
 
-    print()
-    for k, a in y.items():
-        print(k + ': ', a.size(), torch.sum(a))
-    exit()
+    # print()
+    # for k, a in y.items():
+    #     print(k + ': ', a.size(), torch.sum(a))
+    # exit()
     
-    net(x)
-    # timer.disable('pass2')
-    avg = MovingAverage()
-    try:
-        while True:
-            timer.reset()
-            with timer.env('everything else'):
-                net(x)
-            avg.add(timer.total_time())
-            print('\033[2J') # Moves console cursor to 0,0
-            timer.print_stats()
-            print('Avg fps: %.2f\tAvg ms: %.2f         ' % (1/avg.get_avg(), avg.get_avg()*1000))
-    except KeyboardInterrupt:
-        pass
+    # net(x)
+    # # timer.disable('pass2')
+    # avg = MovingAverage()
+    # try:
+    #     while True:
+    #         timer.reset()
+    #         with timer.env('everything else'):
+    #             net(x)
+    #         avg.add(timer.total_time())
+    #         print('\033[2J') # Moves console cursor to 0,0
+    #         timer.print_stats()
+    #         print('Avg fps: %.2f\tAvg ms: %.2f         ' % (1/avg.get_avg(), avg.get_avg()*1000))
+    # except KeyboardInterrupt:
+    #     pass
+
+    # NOTE: check the yolact input and output, in order to connect to GAN
+    from torch.utils.tensorboard import SummaryWriter
+    from pprint import pprint
+    import warnings
+    warnings.filterwarnings("ignore")
+
+    net = Yolact(test_code=False)
+    net.eval()
+    img = torch.zeros([1, 3, 300, 300])
+    output = net(img)
+    # output format
+    # {'detection':, 'net':}
+    # detection format
+    # {'box':, 'mask':, 'class':, 'score':, 'proto':]}
+    print(output[0]['detection']['mask'].shape)
+    
+    # writer = SummaryWriter('runs/yolact_net_generator')
+    # writer.add_graph(net, img)
+    # writer.close
+
+
