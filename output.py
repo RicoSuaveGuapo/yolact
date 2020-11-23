@@ -2,7 +2,9 @@ import os
 import getpass
 from time import time
 
-config   = 'yolact_base_config'
+config   = 'yolact_plus_base_config'
+kind = 'U100'
+assert kind in ['A30','U100','U150','All']
 
 uid = getpass.getuser()
 if uid == 'rico-li':
@@ -10,13 +12,20 @@ if uid == 'rico-li':
     # pth_path = 'weights/yolact_base_1249_60000.pth' # loss ratio (cls,box,mask)  1:1.5:6.125
     # pth_path = 'weights/yolact_base_2777_133333.pth' # loss ratio (cls,box,mask) 1:  3:6.125
     # pth_path = 'weights/yolact_base_454_30000.pth' # with all kinds and loss ratio 1:  6:6.125
-    pth_path = 'weights/yolact_base_4761_114285.pth' # with only A30 and loss ratio 1:  6:6.125
+    # pth_path = 'weights/yolact_base_4761_114285.pth' # with only A30 and loss ratio 1:  6:6.125
+    pth_path = 'weights/yolact_plus_base_1731_114285.pth' # all kinds yolact++ and 1:6:6.125
     
     # Quantitative evaluation
-    val_dir = '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/A30/annotations/yolact_val/JPEGImages'
-    output_dir = '/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/predictions_A30_trainA30'
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
+    if kind != 'All':
+        val_dir = f'/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/{kind}/annotations/yolact_val/JPEGImages'
+        output_dir = f'/home/rico-li/Job/豐興鋼鐵/Prediction/{kind}/{os.path.basename(pth_path)[:-4]}'
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
+    else:
+        val_dir = f'/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/yolact_val/JPEGImages'
+        output_dir = f'/home/rico-li/Job/豐興鋼鐵/Prediction/{kind}/{os.path.basename(pth_path)[:-4]}/'
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
 
 # for dell
 elif uid == 'aiuser':
@@ -68,4 +77,4 @@ os.system(f"python -W ignore eval.py --trained_model={pth_path} --config {config
 # print(f'--- {len(counts)/(time()-start):.2f} fps ---')
 
 # Evaluate on a single image
-# os.system(f'python -W ignore eval.py --trained_model={pth_path} --fast_nms False --score_threshold=0.1 --top_k=15 --config {config} --image /home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/A30/annotations/yolact_train/JPEGImages/mod_1555_curve_13_frame0310.jpg')
+# os.system(f'python -W ignore eval.py --trained_model={pth_path} --fast_nms False --score_threshold=0.1 --top_k=15 --config {config} --image /home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/yolact_train/JPEGImages/mod_1500_curve_3_frame0551.jpg')

@@ -107,7 +107,7 @@ def ap_compare_plot(data:list,output_path,classes, pkl_1_name, pkl_2_name):
             ax.set_xlabel('Confidence')
             ax.set_ylabel('Recll/Precision')
             plt.legend(handles=[recal_curve_fast,recal_curve_norm,predi_curve_fast,predi_curve_norm],loc='lower center')
-            plt.savefig(f'/home/rico-li/Job/豐興鋼鐵/EDA/{clss}_Comp_AP.png')
+            plt.savefig(f'/home/rico-li/Job/豐興鋼鐵/Prediction/{clss}_Comp_AP.png')
             # plt.show()
             # with open(output_path, 'a') as f:
             #     print(f'Kind: {clss}', file=f)
@@ -120,7 +120,7 @@ def ap_compare_plot(data:list,output_path,classes, pkl_1_name, pkl_2_name):
                 # print(f'Kind: {clss}', file=f)
                 # print('no ground truth!', file=f)
             continue
-    print('save file save to /home/rico-li/Job/豐興鋼鐵/EDA')
+    print('save file save to /home/rico-li/Job/豐興鋼鐵/Prediction')
 
 def ap_plot(data,output_path,classes):
     if os.path.exists(output_path):
@@ -152,7 +152,7 @@ def ap_plot(data,output_path,classes):
             ax.set_xlabel('Confidence')
             ax.set_ylabel('Recll/Precision')
             plt.legend(handles=[recall_curve,precision_curve],loc='right')
-            plt.savefig(f'/home/rico-li/Job/豐興鋼鐵/EDA/{clss}_AP_curve.png')
+            plt.savefig(f'/home/rico-li/Job/豐興鋼鐵/Prediction/{clss}_AP_curve.png')
             # plt.show()
             with open(output_path, 'a') as f:
                 print(f'Kind: {clss}', file=f)
@@ -165,22 +165,22 @@ def ap_plot(data,output_path,classes):
                 print(f'Kind: {clss}', file=f)
                 print('no ground truth!', file=f)
             continue
-    print('save file save to /home/rico-li/Job/豐興鋼鐵/EDA')
+    print(f'save file save to /home/rico-li/Job/豐興鋼鐵/Prediction/{clss}_AP_curve.png')
 
 
 
 if __name__ == "__main__":
     classes = ['U150_curve','U150_ok','U100_curve','U100_ok','A30_curve','A30_ok']
-    output_path = '/home/rico-li/Job/豐興鋼鐵/EDA/Confidence_Recall_Precison_A30only.txt'
-    with open('/home/rico-li/Job/豐興鋼鐵/EDA/1102_results/ap_data_A30_trainA30.pkl','rb') as pkl:
-        data = pickle.load(pkl)
-    ap_plot(data=data,output_path=output_path,classes=classes)
+    output_path = '/home/rico-li/Job/豐興鋼鐵/Prediction/Confidence_Recall_Precison_U150.txt'
+    # with open('/home/rico-li/Job/豐興鋼鐵/Prediction/U150/U150_ap_data.pkl','rb') as pkl:
+    #     data = pickle.load(pkl)
+    # ap_plot(data=data,output_path=output_path,classes=classes)
 
-    # pkl_1_path = '/home/rico-li/Job/豐興鋼鐵/EDA/1026_results/ap_data_original.pkl'
-    # pkl_2_path = '/home/rico-li/Job/豐興鋼鐵/EDA/1026_results/ap_data_lossMod.pkl'
-    # with open(pkl_1_path,'rb') as pkl:
-    #     data_1 = pickle.load(pkl)
-    # with open(pkl_2_path,'rb') as pkl:
-    #     data_2 = pickle.load(pkl)
-    # data = [data_1, data_2]
-    # ap_compare_plot(data=data,output_path=output_path,classes=classes,pkl_1_name='Original',pkl_2_name='Modified')
+    pkl_1_path = '/home/rico-li/Job/豐興鋼鐵/Prediction/U150/yolact_plus_base_1731_114285/U150_ap_data.pkl'
+    pkl_2_path = '/home/rico-li/Job/豐興鋼鐵/Prediction/U150/yolact_base_2777_133333/U150_ap_data.pkl'
+    with open(pkl_1_path,'rb') as pkl:
+        data_1 = pickle.load(pkl)
+    with open(pkl_2_path,'rb') as pkl:
+        data_2 = pickle.load(pkl)
+    data = [data_1, data_2]
+    ap_compare_plot(data=data,output_path=output_path,classes=classes,pkl_1_name='Yolact++',pkl_2_name='Yolact_base')

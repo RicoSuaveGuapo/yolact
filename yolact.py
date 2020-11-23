@@ -726,23 +726,92 @@ if __name__ == '__main__':
     #     pass
 
     # NOTE: check the yolact input and output, in order to connect to GAN
-    from torch.utils.tensorboard import SummaryWriter
+    from data import *
+    from utils.augmentations import SSDAugmentation, BaseTransform
+    import torch.utils.data as data
+    from train import *
+    from utils.augmentations import *
+    from data import cfg, MEANS, STD
     from pprint import pprint
     import warnings
     warnings.filterwarnings("ignore")
 
     net = Yolact(test_code=False)
-    net.eval()
-    img = torch.zeros([1, 3, 300, 300])
-    output = net(img)
+    net.load_weights('weights/yolact_base_1249_60000.pth')
+    net.train()
+
+    # dataset = COCODetection(image_path=cfg.dataset.train_images,
+    #                         info_file=cfg.dataset.train_info,
+    #                         transform=BaseTransform(MEANS))
     # output format
-    # {'detection':, 'net':}
+    # im, (gt, masks, num_crowds)
+    # data_loader = data.DataLoader(dataset,batch_size=1,shuffle=False)
+    # output dim
+    # (bacth, im), ((batch,gt), (batch,masks), (batch,num_crowds))
+    # img = next(iter(data_loader))
+    # print(img[0][0].shape)
+    # Input image size is [3, 550, 550]
+    # print(img[1][0][0])
+    # Ground format
+    # (number of gt, [x,y,width,height,gt label])
+    # print(img[1][1][0].shape)
+    # If training:
+    # Mask format is [3, 550, 550]
+    # If validation
+    # Mask format is original image format
+    
+    # example of output
+    # img_np = img[1][1][0].numpy()
+    # img_np = img_np.transpose(2,1,0)*200
+    # cv2.imwrite('/home/rico-li/Job/豐興鋼鐵/EDA/img_np.jpg', img_np) 
+    
+    # print(img[1][2])
+    # num_crowds is being ignored
+    
+    # Yolact net output format
+    # (batch, {'detection':, 'net':})
     # detection format
     # {'box':, 'mask':, 'class':, 'score':, 'proto':]}
-    print(output[0]['detection']['mask'].shape)
+    # img = cv2.imread('/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/yolact_train/JPEGImages/mod_1500_curve_3_frame0551.jpg')
+    # img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    # img = cv2.resize(img, (550, 550))
+    # mean = np.array(MEANS)
+    # std  = np.array(STD)
+    # img = (img - mean)/std
+    # img = img.transpose(2,0,1)
+    # img = torch.from_numpy(img)
+    # img = img.unsqueeze(0).cuda().float()
+    # output = net(img)
+    # print(output[0]['detection']['class'])
     
-    # writer = SummaryWriter('runs/yolact_net_generator')
-    # writer.add_graph(net, img)
-    # writer.close
+    from layers.modules import MultiBoxLoss
+    from data.coco import detection_collate
+    from train import *
+    cfg.dataset = metal2020_dataset
+    cfg.config  = yolact_base_config
+    criterion = MultiBoxLoss(num_classes=cfg.num_classes,
+                             pos_threshold=cfg.positive_iou_threshold,
+                             neg_threshold=cfg.negative_iou_threshold,
+                             negpos_ratio=cfg.ohem_negpos_ratio)
+    
+    net = CustomDataParallel(NetLoss(net, criterion))
+    # net = net.cuda()
+    args.batch_alloc = [1]
 
+    dataset = COCODetection(image_path=cfg.dataset.train_images,
+                            info_file=cfg.dataset.train_info,
+                            transform=SSDAugmentation(MEANS))
+    data_loader = data.DataLoader(dataset, batch_size=1,
+                                  num_workers=12,
+                                  shuffle=False, collate_fn=detection_collate,
+                                  pin_memory=True)
+    # (bacth, im), ((batch,gt), (batch,masks), (batch,num_crowds))
+    datum = next(iter(data_loader))
+    # img = datum[0][0]
+    # img = img.unsqueeze(0).cuda()
+    losses = net(datum)
+    print(losses)
+    # example output
+    # {'B': tensor(0.1974, grad_fn=<DivBackward0>), 'M': tensor(0.2925, grad_fn=<DivBackward0>), 
+    #  'C': tensor(2.8976, grad_fn=<DivBackward0>), 'S': tensor(0.0147, grad_fn=<DivBackward0>)}
 

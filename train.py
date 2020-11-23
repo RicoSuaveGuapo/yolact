@@ -30,7 +30,7 @@ def str2bool(v):
 
 parser = argparse.ArgumentParser(
     description='Yolact Training Script')
-parser.add_argument('--batch_size', default=8, type=int,
+parser.add_argument('--batch_size', default=2, type=int,
                     help='Batch size for training')
 parser.add_argument('--resume', default=None, type=str,
                     help='Checkpoint state_dict file to resume training from. If this is "interrupt"'\
@@ -306,6 +306,7 @@ def train():
                 optimizer.zero_grad()
 
                 # Forward Pass + Compute loss at the same time (see CustomDataParallel and NetLoss)
+                # NOTE
                 losses = net(datum)
                 
                 losses = { k: (v).mean() for k,v in losses.items() } # Mean here because Dataparallel
@@ -513,20 +514,5 @@ def setup_eval():
     eval_script.parse_args(['--no_bar', '--max_images='+str(args.validation_size)])
 
 if __name__ == '__main__':
-    # img = torch.zeros(1, 3, 300, 300)
-    # images, targets, masks, num_crowds = prepare_data((img[0,...],(img[0,...],img[0,...],img[0,...])))
-
-    # compute_validation_loss
-    
-    # yolact_net = Yolact()
-    # net = yolact_net
-    # net.train()
-    
-
-    from torch.utils.tensorboard import SummaryWriter
-    # writer = SummaryWriter('runs/test_1')
-    # writer.add_graph(net, images)
-    # writer.close()
-
     train()
 

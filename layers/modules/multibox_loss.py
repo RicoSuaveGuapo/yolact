@@ -69,7 +69,6 @@ class MultiBoxLoss(nn.Module):
             
             * Only if mask_type == lincomb
         """
-
         loc_data  = predictions['loc']
         conf_data = predictions['conf']
         mask_data = predictions['mask']
