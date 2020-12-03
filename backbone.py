@@ -457,3 +457,35 @@ def construct_backbone(cfg):
         backbone.add_layer()
 
     return backbone
+
+
+if __name__ == "__main__":
+    # fakeimg = torch.Tensor(1,64,128,128)
+    # downsample = nn.Conv2d(in_channels=64,out_channels=256,kernel_size=3,padding=1)
+    # bonk = Bottleneck(inplanes=64,planes=64,downsample=downsample)
+    import netron
+    from data.config import cfg
+    # torch.onnx.export(bonk, fakeimg, 'runs/bottleneck.onnx')
+    # netron.start('runs/bottleneck.onnx')
+    # fakeimg = torch.Tensor(1,3,128,128)
+    # aa = ([3, 4, 23, 3],)
+    # aa = [1,1,1,1]
+    # backbone = ResNetBackbone(*aa)
+    # print(backbone)
+    # torch.onnx.export(backbone, fakeimg, 'runs/backbone.onnx')
+    # netron.start('runs/backbone.onnx')
+    # print(backbone.channels)
+
+    backbone = construct_backbone(cfg.backbone)
+    print(backbone.channels)
+
+
+
+    # from torch.utils.tensorboard import SummaryWriter
+    # from torchviz import make_dot
+    # output = bonk(fakeimg)
+    # make_dot(output, params=dict(bonk.named_parameters()))
+    # make_dot(output, params=dict(bonk.named_parameters())).render("bottleneck", format="png")
+    # writer = SummaryWriter('runs/bottleneck')
+    # writer.add_graph(bonk, fakeimg)
+    # writer.close()

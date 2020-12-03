@@ -259,7 +259,7 @@ backbone_base = Config({
     'args': tuple(),
     'transform': resnet_transform,
 
-    'selected_layers': list(),
+    'selected_layers': list(), # the selected layers to do the FPN
     'pred_scales': list(),
     'pred_aspect_ratios': list(),
 
@@ -703,7 +703,7 @@ yolact_base_config = coco_base_config.copy({
     'name': 'yolact_base',
 
     # Dataset stuff
-    # TODO: Original
+    # NOTE: Original
     # 'dataset': coco2017_dataset,
     # 'num_classes': len(coco2017_dataset.class_names) + 1,
     'dataset': metal2020_dataset,

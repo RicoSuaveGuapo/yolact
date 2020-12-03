@@ -7,7 +7,8 @@ from data import cfg, mask_type
 
 import numpy as np
 
-
+# self.detect = Detect(cfg.num_classes, bkg_label=0, top_k=cfg.nms_top_k,
+#             conf_thresh=cfg.nms_conf_thresh, nms_thresh=cfg.nms_thresh)
 class Detect(object):
     """At test time, Detect is the final layer of SSD.  Decode location preds,
     apply non-maximum suppression to location predictions based on conf

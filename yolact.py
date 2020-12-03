@@ -1,19 +1,20 @@
-import torch, torchvision
-import torch.nn as nn
-import torch.nn.functional as F
-from torchvision.models.resnet import Bottleneck
-import numpy as np
+from collections import defaultdict
 from itertools import product
 from math import sqrt
 from typing import List
-from collections import defaultdict
 
+import numpy as np
+import torch
+import torch.backends.cudnn as cudnn
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision
+from torchvision.models.resnet import Bottleneck
+
+from backbone import construct_backbone
 from data.config import cfg, mask_type
 from layers import Detect
 from layers.interpolate import InterpolateModule
-from backbone import construct_backbone
-
-import torch.backends.cudnn as cudnn
 from utils import timer
 from utils.functions import MovingAverage, make_net
 
@@ -26,6 +27,9 @@ use_jit = torch.cuda.device_count() <= 1
 if not use_jit:
     print('Multiple GPUs detected! Turning off JIT.')
 
+# NOTE: I turn off the ScriptModule just for inspectation of the model
+# ScriptModuleWrapper = torch.jit.ScriptModule if use_jit else nn.Module
+use_jit = False
 ScriptModuleWrapper = torch.jit.ScriptModule if use_jit else nn.Module
 script_method_wrapper = torch.jit.script_method if use_jit else lambda fn, _rcn=None: fn
 
@@ -70,8 +74,11 @@ class PredictionModule(nn.Module):
                          from parent instead of from this module.
     """
     
-    def __init__(self, in_channels, out_channels=1024, aspect_ratios=[[1]], scales=[1], parent=None, index=0):
+    def __init__(self, in_channels, out_channels=1024, aspect_ratios=[[1]], scales=[1], parent=None, index=0, torchout=False):
         super().__init__()
+
+        # NOTE: for visualization of model
+        self.torchout    = torchout
 
         self.num_classes = cfg.num_classes
         self.mask_dim    = cfg.mask_dim # Defined by Yolact
@@ -208,6 +215,9 @@ class PredictionModule(nn.Module):
 
         if cfg.use_instance_coeff:
             preds['inst'] = inst
+
+        if self.torchout:
+            preds = [v for k, v in preds.items()]
         
         return preds
 
@@ -323,7 +333,7 @@ class FPN(ScriptModuleWrapper):
 
         # For backward compatability, the conv layers are stored in reverse but the input and output is
         # given in the correct order. Thus, use j=-i-1 for the input and output and i for the conv layers.
-        j = len(convouts)
+        j = len(convouts) # 3 in base config
         for lat_layer in self.lat_layers:
             j -= 1
 
@@ -346,7 +356,7 @@ class FPN(ScriptModuleWrapper):
         cur_idx = len(out)
 
         # In the original paper, this takes care of P6
-        if self.use_conv_downsample:
+        if self.use_conv_downsample: # True in base config
             for downsample_layer in self.downsample_layers:
                 out.append(downsample_layer(out[-1]))
         else:
@@ -396,8 +406,9 @@ class Yolact(nn.Module):
         - pred_aspect_ratios: A list of lists of aspect ratios with len(selected_layers) (see PredictionModule)
     """
 
-    def __init__(self, test_code=False):
+    def __init__(self, test_code=False, torchout=False):
         super().__init__()
+        self.torchout = torchout
         self.test_code = test_code
         self.backbone = construct_backbone(cfg.backbone)
 
@@ -414,10 +425,11 @@ class Yolact(nn.Module):
             else:
                 self.num_grids = 0
 
+            # The input layer to the mask prototype generation network
             self.proto_src = cfg.mask_proto_src
             
             if self.proto_src is None: in_channels = 3
-            elif cfg.fpn is not None: in_channels = cfg.fpn.num_features
+            elif cfg.fpn is not None: in_channels = cfg.fpn.num_features # 256
             else: in_channels = self.backbone.channels[self.proto_src]
             in_channels += self.num_grids
 
@@ -567,15 +579,19 @@ class Yolact(nn.Module):
         cfg._tmp_img_h = img_h
         cfg._tmp_img_w = img_w
         
+        # ---------------- backbone ---------------- #
         with timer.env('backbone'):
             outs = self.backbone(x)
 
+
+        # ----------------   FPN   ----------------- #
         if cfg.fpn is not None:
             with timer.env('fpn'):
                 # Use backbone.selected_layers because we overwrote self.selected_layers
                 outs = [outs[i] for i in cfg.backbone.selected_layers]
                 outs = self.fpn(outs)
 
+        # ---------------- protoNet ---------------- #
         proto_out = None
         if cfg.mask_type == mask_type.lincomb and cfg.eval_mask_branch:
             with timer.env('proto'):
@@ -603,7 +619,7 @@ class Yolact(nn.Module):
                     bias_shape[-1] = 1
                     proto_out = torch.cat([proto_out, torch.ones(*bias_shape)], -1)
 
-
+        # ---------------- pred_heads ---------------- #
         with timer.env('pred_heads'):
             pred_outs = { 'loc': [], 'conf': [], 'mask': [], 'priors': [] }
 
@@ -614,6 +630,7 @@ class Yolact(nn.Module):
                 pred_outs['inst'] = []
             
             for idx, pred_layer in zip(self.selected_layers, self.prediction_layers):
+                # outputs from FPN
                 pred_x = outs[idx]
 
                 if cfg.mask_type == mask_type.lincomb and cfg.mask_proto_prototypes_as_features:
@@ -624,18 +641,32 @@ class Yolact(nn.Module):
                 # A hack for the way dataparallel works
                 if cfg.share_prediction_module and pred_layer is not self.prediction_layers[0]:
                     pred_layer.parent = [self.prediction_layers[0]]
-
-                p = pred_layer(pred_x)
                 
+                # NOTE:
+                # the outputs from FPN goes into the prediction head
+                p = pred_layer(pred_x)
+                # get the output in the format:
+                # p = { 'loc': bbox, 'conf': conf, 'mask': mask, 'priors': priors }
+                # Input
+                #     - x: The convOut from a layer in the backbone network
+                #         Size: [batch_size, in_channels, conv_h, conv_w])
+
+                # Returns a tuple (bbox_coords, class_confs, mask_output, prior_boxes) with sizes
+                #     - bbox_coords: [batch_size, conv_h*conv_w*num_priors, 4]
+                #     - class_confs: [batch_size, conv_h*conv_w*num_priors, num_classes]
+                #     - mask_output: [batch_size, conv_h*conv_w*num_priors, mask_dim]
+                #     - prior_boxes: [conv_h*conv_w*num_priors, 4]
+                # put them into the pred_outs
                 for k, v in p.items():
                     pred_outs[k].append(v)
-
+                    
         for k, v in pred_outs.items():
             pred_outs[k] = torch.cat(v, -2)
 
         if proto_out is not None:
             pred_outs['proto'] = proto_out
 
+        # ----- Training output -----
         if self.training:
             # For the extra loss functions
             if cfg.use_class_existence_loss:
@@ -644,7 +675,14 @@ class Yolact(nn.Module):
             if cfg.use_semantic_segmentation_loss:
                 pred_outs['segm'] = self.semantic_seg_conv(outs[0])
 
-            return pred_outs
+            if self.torchout:
+                pred_head = [k for k, v in pred_outs.items()]
+                pred_outs = [v for k, v in pred_outs.items()]
+                return (pred_head, pred_outs)
+            else:
+                return pred_outs
+
+        # ----- Validation/Test -----
         else:
             if cfg.use_mask_scoring:
                 pred_outs['score'] = torch.sigmoid(pred_outs['score'])
@@ -672,12 +710,16 @@ class Yolact(nn.Module):
                     
                 else:
                     pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
-            if not self.test_code:
-                return self.detect(pred_outs, self)
+            
+            if self.torchout:
+                pred_head = [k for k, v in pred_outs.items()]
+                pred_outs = [v for k, v in pred_outs.items()]
+                return (pred_head, pred_outs)
             else:
-                return self.detect(pred_outs, self)[0]['detection']['box']
-
-
+                if not self.test_code:
+                    return self.detect(pred_outs, self)
+                else:
+                    return self.detect(pred_outs, self)[0]['detection']['box']
 
 
 # Some testing code
@@ -725,53 +767,50 @@ if __name__ == '__main__':
     # except KeyboardInterrupt:
     #     pass
 
-    # NOTE: check the yolact input and output, in order to connect to GAN
-    from data import *
-    from utils.augmentations import SSDAugmentation, BaseTransform
+    # NOTE
+    # ----- Rico Test Section -----
+    import warnings
+
+    import netron
     import torch.utils.data as data
+    from torch.utils.tensorboard import SummaryWriter
+
+    from data import *
+    from data import MEANS, STD, cfg
+    from data.coco import detection_collate
+    from layers.modules import MultiBoxLoss
     from train import *
     from utils.augmentations import *
-    from data import cfg, MEANS, STD
-    from pprint import pprint
-    import warnings
+    from utils.augmentations import BaseTransform, SSDAugmentation
     warnings.filterwarnings("ignore")
 
-    net = Yolact(test_code=False)
-    net.load_weights('weights/yolact_base_1249_60000.pth')
-    net.train()
-
+    # ----- Dataset Inspectation -----
     # dataset = COCODetection(image_path=cfg.dataset.train_images,
     #                         info_file=cfg.dataset.train_info,
     #                         transform=BaseTransform(MEANS))
-    # output format
-    # im, (gt, masks, num_crowds)
+    # ----- output format ----- 
+    # >>> im, (gt, masks, num_crowds)
     # data_loader = data.DataLoader(dataset,batch_size=1,shuffle=False)
-    # output dim
-    # (bacth, im), ((batch,gt), (batch,masks), (batch,num_crowds))
+    # >>> (bacth, im), ((batch,gt), (batch,masks), (batch,num_crowds))
+    # ----- output dim ----- 
+    # >>> (bacth, im), ((batch,gt), (batch,masks), (batch,num_crowds))
     # img = next(iter(data_loader))
     # print(img[0][0].shape)
-    # Input image size is [3, 550, 550]
+    # ----- Input image size is [3, 550, 550] ----- 
     # print(img[1][0][0])
-    # Ground format
-    # (number of gt, [x,y,width,height,gt label])
+    # ----- Ground Truth format ----- 
+    # >>> (number of gt, [x,y,width,height,gt label])
     # print(img[1][1][0].shape)
-    # If training:
-    # Mask format is [3, 550, 550]
-    # If validation
-    # Mask format is original image format
+    # ----- While training ----- 
+    # >>> Mask format is [3, 550, 550]
+    # ----- If validation ----- 
+    # >>> Mask format is original image format
     
-    # example of output
+    # ----- Example of output ----- 
     # img_np = img[1][1][0].numpy()
     # img_np = img_np.transpose(2,1,0)*200
     # cv2.imwrite('/home/rico-li/Job/豐興鋼鐵/EDA/img_np.jpg', img_np) 
-    
     # print(img[1][2])
-    # num_crowds is being ignored
-    
-    # Yolact net output format
-    # (batch, {'detection':, 'net':})
-    # detection format
-    # {'box':, 'mask':, 'class':, 'score':, 'proto':]}
     # img = cv2.imread('/home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/yolact_train/JPEGImages/mod_1500_curve_3_frame0551.jpg')
     # img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     # img = cv2.resize(img, (550, 550))
@@ -781,37 +820,82 @@ if __name__ == '__main__':
     # img = img.transpose(2,0,1)
     # img = torch.from_numpy(img)
     # img = img.unsqueeze(0).cuda().float()
-    # output = net(img)
-    # print(output[0]['detection']['class'])
-    
-    from layers.modules import MultiBoxLoss
-    from data.coco import detection_collate
-    from train import *
+
+    # ----- Net Inspectation ----- 
+    # net = Yolact(torchout=True)
+    # net.load_weights('weights/yolact_base_1249_60000.pth')
+    # net.training = False
+    # pred_head, pred_outs = net(img)
+    # print(pred_head)
+    # >>> ['loc', 'conf', 'mask', 'priors', 'proto']
+    # print([i.size() for i in pred_outs])
+
+    # ----- Yolact net output format -----
+    # >>> (batch, {'detection':, 'net':})
+    # ----- detection format -----
+    # >>> {'box':, 'mask':, 'class':, 'score':, 'proto':]}
+
+    # ----- Check the process in the trainning -----
+    net = Yolact(test_code=False,torchout=False)
+    net.load_weights('weights/yolact_base_1249_60000.pth')
+    net.training = True
+    # ----- Loss Inspectation -----
     cfg.dataset = metal2020_dataset
     cfg.config  = yolact_base_config
     criterion = MultiBoxLoss(num_classes=cfg.num_classes,
                              pos_threshold=cfg.positive_iou_threshold,
                              neg_threshold=cfg.negative_iou_threshold,
                              negpos_ratio=cfg.ohem_negpos_ratio)
-    
     net = CustomDataParallel(NetLoss(net, criterion))
     # net = net.cuda()
     args.batch_alloc = [1]
-
     dataset = COCODetection(image_path=cfg.dataset.train_images,
                             info_file=cfg.dataset.train_info,
                             transform=SSDAugmentation(MEANS))
     data_loader = data.DataLoader(dataset, batch_size=1,
-                                  num_workers=12,
-                                  shuffle=False, collate_fn=detection_collate,
-                                  pin_memory=True)
-    # (bacth, im), ((batch,gt), (batch,masks), (batch,num_crowds))
+                                  shuffle=False, collate_fn=detection_collate)
     datum = next(iter(data_loader))
-    # img = datum[0][0]
-    # img = img.unsqueeze(0).cuda()
     losses = net(datum)
     print(losses)
-    # example output
-    # {'B': tensor(0.1974, grad_fn=<DivBackward0>), 'M': tensor(0.2925, grad_fn=<DivBackward0>), 
-    #  'C': tensor(2.8976, grad_fn=<DivBackward0>), 'S': tensor(0.0147, grad_fn=<DivBackward0>)}
+    # ----- output format -----
+    # >>> {'B': tensor(0.1974, grad_fn=<DivBackward0>), 'M': tensor(0.2925, grad_fn=<DivBackward0>), 
+    # >>> 'C': tensor(2.8976, grad_fn=<DivBackward0>), 'S': tensor(0.0147, grad_fn=<DivBackward0>)}
+    # Loss Key:
+        #  - B: Box Localization Loss
+        #  - C: Class Confidence Loss
+        #  - M: Mask Loss
+        #  - P: Prototype Loss
+        #  - D: Coefficient Diversity Loss
+        #  - E: Class Existence Loss
+        #  - S: Semantic Segmentation Loss
 
+    # fakeimg1 = torch.Tensor(1,512,128,128)
+    # fakeimg2 = torch.Tensor(1,1024,128,128)
+    # fakeimg3 = torch.Tensor(1,2048,128,128)
+    # fpn = FPN([512,1024,2048])
+    # fpnout = fpn([fakeimg1, fakeimg2, fakeimg3])
+    # torch.onnx.export(fpn, [fakeimg1, fakeimg2, fakeimg3], 'runs/fpn.onnx')
+    # netron.start('runs/fpn.onnx')
+
+    # num_grids = 0
+    # in_channels = 3 + num_grids
+    # proto_net, cfg.mask_dim = make_net(in_channels, cfg.mask_proto_net, include_last_relu=False)
+    # proto_x = img
+    # proto_out = proto_net(proto_x)
+    # torch.onnx.export(proto_net, proto_x, 'runs/proto_net.onnx')
+    # netron.start('runs/proto_net.onnx')
+
+    # _, _, cfg._tmp_img_h, cfg._tmp_img_w = fakeimg1.size()
+    # src_channels  = 256
+    # cfg.num_heads = 3
+    # cfg.mask_dim  = 550
+    # pred = PredictionModule(src_channels, src_channels,
+    #                                 aspect_ratios = cfg.backbone.pred_aspect_ratios[0],
+    #                                 scales        = cfg.backbone.pred_scales[0],
+    #                                 parent        = None,
+    #                                 index         = 0,
+    #                                 torchout=True)
+    # # pout = pred(fpnout[0])
+    
+    # torch.onnx.export(pred, fpnout[0], 'runs/pred.onnx')
+    # netron.start('runs/pred.onnx')
