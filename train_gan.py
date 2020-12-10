@@ -1,28 +1,32 @@
-from data import *
-from utils.augmentations import SSDAugmentation, BaseTransform
-from utils.functions import MovingAverage, SavePath
-from utils.logger import Log
-from utils import timer
-from layers.modules import MultiBoxLoss
-from yolact import Yolact
-import os
-import sys
-import time
-import math, random
-from pathlib import Path
-import torch
-from torch.autograd import Variable
-import torch.nn as nn
-import torch.optim as optim
-import torch.backends.cudnn as cudnn
-import torch.nn.init as init
-import torch.utils.data as data
-import numpy as np
 import argparse
 import datetime
+import math
+import os
+import random
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.backends.cudnn as cudnn
+import torch.nn as nn
+import torch.nn.init as init
+import torch.optim as optim
+import torch.utils.data as data
+from torch.autograd import Variable
+from torch.nn.functional import interpolate
 
 # Oof
 import eval as eval_script
+from data import *
+from layers.modules import MultiBoxLoss
+from utils import timer
+from utils.augmentations import BaseTransform, SSDAugmentation
+from utils.functions import MovingAverage, SavePath
+from utils.logger import Log
+from yolact import Discriminator, Discriminator_StandFord, Yolact
+
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -147,8 +151,8 @@ class NetLoss(nn.Module):
     def forward(self, images, targets, masks, num_crowds):
         preds = self.net(images)
         if self.pred_seg:
-            losses, pred_seg, label_t = self.criterion(self.net, preds, targets, masks, num_crowds)
-            return losses, pred_seg, label_t
+            losses, seg_list, pred_list = self.criterion(self.net, preds, targets, masks, num_crowds)
+            return losses, seg_list, pred_list
         else:
             losses = self.criterion(self.net, preds, targets, masks, num_crowds)
             return losses
@@ -175,6 +179,25 @@ class CustomDataParallel(nn.DataParallel):
             out[k] = torch.stack([output[k].to(output_device) for output in outputs])
         
         return out
+# NOTE
+def gan_init(mod):
+    # Since the output value (before final activation) of discriminator 
+    # with possible negative initial values will easily be became zero while pass though
+    # the ReLU. This will make the BCE loss explode
+    # By default, while BCE loss explode, torch will clamp the value
+    # to 100, in order to keep the gradient calculation vaild. 
+    if isinstance(mod, nn.Conv2d):
+        torch.nn.init.kaiming_uniform_(mod.weight)
+        torch.nn.init.zeros_(mod.bias)
+
+def freeze_pretrain(model, freeze=True):
+    if freeze:
+        for par in model.parameters():
+            par.requires_grad = False
+    else:
+        for par in model.parameters():
+            par.requires_grad = True
+
 
 def train():
     if not os.path.exists(args.save_folder):
@@ -195,6 +218,22 @@ def train():
     net = yolact_net
     net.train()
 
+    # DANGER
+    # freeze the generator
+    freeze_pretrain(net, freeze=True)
+    print('\n--- Generator created! ---')
+
+    # NOTE
+    # I maunally set the original image size and seg size as 168
+    # might change in the future, for example 550
+    if cfg.pred_seg:
+        dis_size = 138
+        dis_net  = Discriminator_StandFord(i_size = dis_size, s_size = dis_size)
+        # set the dis net's initial parameters value as all positive.
+        dis_net.apply(gan_init)
+        dis_net.train()
+        print('--- Discriminator created! ---\n')
+
     if args.log:
         log = Log(cfg.name, args.log_folder, dict(args._get_kwargs()),
             overwrite=(args.resume is None), log_gpu_stats=args.log_gpu)
@@ -213,18 +252,29 @@ def train():
         print('Resuming training, loading {}...'.format(args.resume))
         yolact_net.load_weights(args.resume)
 
+        # DANGER
+        # freeze the generator
+        freeze_pretrain(yolact_net, freeze=True)
+        print('Generator is freeze')
+
         if args.start_iter == -1:
             args.start_iter = SavePath.from_str(args.resume).iteration
     else:
         print('Initializing weights...')
         yolact_net.init_weights(backbone_path=args.save_folder + cfg.backbone.path)
 
-    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
+    optimizer_gen = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
                           weight_decay=args.decay)
-    criterion = MultiBoxLoss(num_classes=cfg.num_classes,
-                             pos_threshold=cfg.positive_iou_threshold,
-                             neg_threshold=cfg.negative_iou_threshold,
-                             negpos_ratio=cfg.ohem_negpos_ratio)
+    if cfg.pred_seg:
+        optimizer_dis = optim.SGD(dis_net.parameters(), lr=args.lr, momentum=args.momentum,
+                            weight_decay=args.decay)
+
+    criterion     = MultiBoxLoss(num_classes=cfg.num_classes,
+                                pos_threshold=cfg.positive_iou_threshold,
+                                neg_threshold=cfg.negative_iou_threshold,
+                                negpos_ratio=cfg.ohem_negpos_ratio, pred_seg=cfg.pred_seg)
+
+    criterion_dis = nn.BCELoss()
 
     if args.batch_alloc is not None:
         args.batch_alloc = [int(x) for x in args.batch_alloc.split(',')]
@@ -232,9 +282,11 @@ def train():
             print('Error: Batch allocation (%s) does not sum to batch size (%s).' % (args.batch_alloc, args.batch_size))
             exit(-1)
 
-    net = CustomDataParallel(NetLoss(net, criterion))
+    net = CustomDataParallel(NetLoss(net, criterion, pred_seg=cfg.pred_seg))
     if args.cuda:
-        net = net.cuda()
+        net     = net.cuda()
+        if cfg.pred_seg:
+            dis_net = dis_net.cuda()
     
     # Initialize everything
     if not cfg.freeze_bn: yolact_net.freeze_bn() # Freeze bn so we don't kill our means
@@ -302,29 +354,101 @@ def train():
 
                 # Warm up by linearly interpolating the learning rate from some smaller value
                 if cfg.lr_warmup_until > 0 and iteration <= cfg.lr_warmup_until:
-                    set_lr(optimizer, (args.lr - cfg.lr_warmup_init) * (iteration / cfg.lr_warmup_until) + cfg.lr_warmup_init)
+                    set_lr(optimizer_gen, (args.lr - cfg.lr_warmup_init) * (iteration / cfg.lr_warmup_until) + cfg.lr_warmup_init)
 
                 # Adjust the learning rate at the given iterations, but also if we resume from past that iteration
                 while step_index < len(cfg.lr_steps) and iteration >= cfg.lr_steps[step_index]:
                     step_index += 1
-                    set_lr(optimizer, args.lr * (args.gamma ** step_index))
+                    set_lr(optimizer_gen, args.lr * (args.gamma ** step_index))
                 
                 # Zero the grad to get ready to compute gradients
-                optimizer.zero_grad()
+                optimizer_gen.zero_grad()
 
-                # Forward Pass + Compute loss at the same time (see CustomDataParallel and NetLoss)
-                losses = net(datum)
+                # NOTE
+                if cfg.pred_seg:
+                    # pred_seg dim: e.g. (138,138,instances=3)
+                    losses, seg_list, pred_list = net(datum)
+                    # need to transform to [b, classes, h, w]
+                    seg_list = [v.permute(2,1,0).contiguous() for v in seg_list]
+                    b = len(seg_list) # batch size
+                    _, seg_h, seg_w = seg_list[0].size()
+                    # a empty tensor to be pasted on (neglact the background class)
+                    seg_clas = torch.zeros(b, cfg.num_classes-1, seg_h, seg_w)
+                    for idx in range(b):
+                        for i, pred in enumerate(pred_list[idx]):
+                            seg_clas[idx, pred, ...] += seg_list[idx][i,...]
+                    
+                    seg_clas = torch.clamp(seg_clas, 0, 1)
+                    # TODO: might change to upsample the prediction map
+                    # seg_clas = interpolate(seg_clas, size = (550,550), 
+                    #                        mode='bilinear',align_corners=True)
+                    # Input image size is [b, 3, 550, 550]
+                    # Downsample to       [b, 3, seg_h, seg_w]
+                    image = interpolate(torch.stack(datum[0]), size = (seg_h,seg_w), 
+                                                mode='bilinear',align_corners=False)
+                    # Input ground truth is [b, instances, 550, 550]
+                    # need to transform to  [b, classes, seg_h, seg_w]
+                    # interpolate first
+                    mask_list   = [interpolate(mask.unsqueeze(0), size = (seg_h,seg_w),mode='bilinear',align_corners=False).squeeze() for mask in datum[1][1]]
+                    # get the gt target
+                    target_list = [target for target in datum[1][0]]
+                    # a empty tensor to be pasted on (neglact the background class)
+                    mask_clas   = torch.zeros(b, cfg.num_classes-1, seg_h, seg_w)
+                    for idx in range(b):
+                        for i, i_target in enumerate(target_list[idx]):
+                            mask_clas[idx, i_target[-1].long(), ...] += mask_list[idx][i,...]
+
+                    output_pred = dis_net(img = image, seg = seg_clas)
+                    output_grou = dis_net(img = image, seg = mask_clas)
+
+                    # [0.6894, 0.6895]
+                    # print(output_pred, output_grou)
+
+                    # 0 for Fake/Generated
+                    # 1 for True/Ground Truth
+                    # Take the advice of practical implementation 
+                    # from https://arxiv.org/abs/1611.08408
+                    fake_label = torch.zeros(b)
+                    real_label = torch.ones(b)
+                    # Take the advice of practical implementation 
+                    # from https://arxiv.org/abs/1611.08408
+                    
+                    # print(output_pred, output_grou)
+                    # loss_pred = criterion_dis(output_pred,target=fake_label)
+                    loss_pred = -criterion_dis(output_pred,target=real_label)
+                    loss_grou =  criterion_dis(output_grou,target=real_label)
+                    loss_dis  = loss_pred + loss_grou
+                    
+                    # if math.isnan(loss_dis.item()):
+                    #     print('Prediction')
+                    #     print(output_pred, output_grou)
+                    #     print('Target')
+                    #     print(fake_label, real_label)
+                    #     raise ValueError
+
+
+                    # print(loss_pred, loss_grou)
+
+                else:
+                    # Forward Pass + Compute loss at the same time (see CustomDataParallel and NetLoss)
+                    losses = net(datum)
                 
                 losses = { k: (v).mean() for k,v in losses.items() } # Mean here because Dataparallel
-                loss = sum([losses[k] for k in losses])
-                
+                if not cfg.pred_seg:
+                    loss = sum([losses[k] for k in losses])
+                else:
+                    # TODO: Hyperparameter
+                    lambda_dis = cfg.lambda_dis
+                    loss = sum([losses[k] for k in losses])
+                    loss -= lambda_dis*loss_dis
+
                 # no_inf_mean removes some components from the loss, so make sure to backward through all of it
                 # all_loss = sum([v.mean() for v in losses.values()])
 
                 # Backprop
                 loss.backward() # Do this to free up vram even if loss is not finite
                 if torch.isfinite(loss).item():
-                    optimizer.step()
+                    optimizer_gen.step()
                 
                 # Add the loss to the moving average for bookkeeping
                 for k in losses:
@@ -343,10 +467,12 @@ def train():
                     
                     total = sum([loss_avgs[k].get_avg() for k in losses])
                     loss_labels = sum([[k, loss_avgs[k].get_avg()] for k in loss_types if k in losses], [])
-                    
-                    print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || ETA: %s || timer: %.3f')
-                            % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
-
+                    if cfg.pred_seg:
+                        print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || Dis: %.2f || ETA: %s || timer: %.3f')
+                                % tuple([epoch, iteration] + loss_labels + [total, loss_dis, eta_str, elapsed]), flush=True)
+                    else:
+                        print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f ||  ETA: %s || timer: %.3f')
+                                % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
                     # Loss Key:
                     #  - B: Box Localization Loss
                     #  - C: Class Confidence Loss
@@ -356,6 +482,7 @@ def train():
                     #  - E: Class Existence Loss
                     #  - S: Semantic Segmentation Loss
                     #  - T: Total loss
+                    #  -Dis: Discriminator Loss
 
                 if args.log:
                     precision = 5
@@ -404,8 +531,8 @@ def train():
     yolact_net.save_weights(save_path(epoch, iteration))
 
 
-def set_lr(optimizer, new_lr):
-    for param_group in optimizer.param_groups:
+def set_lr(optimizer_gen, new_lr):
+    for param_group in optimizer_gen.param_groups:
         param_group['lr'] = new_lr
     
     global cur_lr

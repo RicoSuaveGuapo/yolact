@@ -691,6 +691,11 @@ coco_base_config = Config({
     'rescore_mask': False,
     'rescore_bbox': False,
     'maskious_to_train': -1,
+
+    # NOTE:
+    # Discriminator Control
+    'pred_seg':False,
+    'lambda_dis': 2,
 })
 
 
@@ -701,6 +706,10 @@ coco_base_config = Config({
 
 yolact_base_config = coco_base_config.copy({
     'name': 'yolact_base',
+
+    # NOTE:
+    'pred_seg': True,
+    'lambda_dis': 2,
 
     # Dataset stuff
     # NOTE: Original

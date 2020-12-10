@@ -1,6 +1,7 @@
 from collections import defaultdict
 from itertools import product
 from math import sqrt
+import math
 from typing import List
 
 import numpy as np
@@ -32,6 +33,199 @@ if not use_jit:
 use_jit = False
 ScriptModuleWrapper = torch.jit.ScriptModule if use_jit else nn.Module
 script_method_wrapper = torch.jit.script_method if use_jit else lambda fn, _rcn=None: fn
+
+
+def outSize(input_size:int, kernal=None, stride=1, padding=0, 
+            pool=None, adapool:bool=False, with_pool:bool=False, 
+            out_channels:int=None, repeat:int=1, final:bool=False):
+
+    if with_pool:
+        assert pool != None, 'if with pooling, must given the pool size.'
+        assert repeat >= 1, 'argument repeat only eats >= 1'
+    
+    if adapool:
+        assert type(adapool) == tuple, 'if using adapool, must given the output shape in tuple'
+        assert len(adapool) == 2, 'only 2D is supported'
+        assert adapool[0] == adapool[1], 'only support equal size AdaptiveAvgPool2d'
+
+    # recall the formula (W−F+2P)/S+1
+    if not adapool:
+        if not final:
+            if repeat == 1:
+                if with_pool:
+                    outsize = math.floor((input_size - kernal   + 2 * padding)/stride +1)
+                    outsize = math.floor((outsize - pool + 2 * padding)/pool +1)
+                else:
+                    outsize = math.floor((input_size - kernal   + 2 * padding)/stride +1)
+            else:
+                outsize = input_size
+                if with_pool:
+                    for i in range(repeat):
+                        outsize = math.floor((outsize - kernal + 2 * padding)/stride +1)
+                        outsize = math.floor((outsize - pool   + 2 * padding)/pool +1)
+                else:
+                    for i in range(repeat):
+                        outsize = math.floor((outsize - kernal + 2 * padding)/stride +1)
+        else:
+            outsize = input_size**2*out_channels
+    else:
+        outsize = adapool[0]
+    
+    return outsize
+
+
+class Discriminator(nn.Module):
+    def __init__(self, i_size, s_size, in_channels = 3, NUM_CLASSES = 7):
+        '''
+        # 0 for Fake/Generated
+        # 1 for True/Ground Truth
+        '''
+        # I assume they are the same
+        assert i_size == s_size, "image size and segmentation/ground size are not the same"
+
+        super().__init__()
+        i_channel = [64,128]
+        o_channel = [64,128]
+        c_channel = [256,32,8,1]
+
+        self.conv1_i = nn.Conv2d(in_channels=in_channels,  out_channels=i_channel[0], kernel_size=3)
+        self.conv2_i = nn.Conv2d(in_channels=i_channel[0], out_channels=i_channel[1], kernel_size=3)
+        self.conv1_s = nn.Conv2d(in_channels=NUM_CLASSES,  out_channels=o_channel[0], kernel_size=3)
+        self.conv2_s = nn.Conv2d(in_channels=o_channel[0], out_channels=o_channel[1], kernel_size=3)
+        self.conv1_c = nn.Conv2d(in_channels=c_channel[0], out_channels=c_channel[1], kernel_size=3)
+        self.conv2_c = nn.Conv2d(in_channels=c_channel[1], out_channels=c_channel[2], kernel_size=3)
+        self.conv3_c = nn.Conv2d(in_channels=c_channel[2], out_channels=c_channel[3], kernel_size=3)
+        
+        i_size    = outSize(i_size,3,1,0, pool=3, with_pool=True, repeat = 2)
+        # if i_size == s_size then the below is redundant
+        # s_size  = outSize(s_size,3,1,0, repeat = 2)
+        c_size    = outSize(i_size,3,1,0, repeat = 3)
+        feat_size = outSize(c_size, out_channels=c_channel[-1], final=True)
+        
+        self.dense1 = nn.Linear(in_features=feat_size, out_features=32)
+        self.drop   = nn.Dropout(p=0.5)
+        self.dense2 = nn.Linear(in_features=32, out_features=2)
+        
+        self.maxpool = nn.MaxPool2d(3)
+        self.act     = F.relu
+    
+    def forward(self, img, seg):
+        x1 = img # original image
+        x2 = seg # could be ground truth or prediction
+        
+        # img
+        x1 = self.conv1_i(x1)
+        x1 = self.act(x1)
+        x1 = self.maxpool(x1)
+        x1 = self.conv2_i(x1)
+        x1 = self.act(x1)
+        x1 = self.maxpool(x1)
+        
+        # seg
+        x2 = self.conv1_s(x2)
+        x2 = self.act(x2)
+        x2 = self.maxpool(x2)
+        x2 = self.conv2_s(x2)
+        x2 = self.act(x2)
+        x2 = self.maxpool(x2)
+        
+        concat = torch.cat([x1, x2], dim=1)
+        
+        c = self.conv1_c(concat)
+        c = self.act(c)
+        c = self.conv2_c(c)
+        c = self.act(c)
+        c = self.conv3_c(c)
+        c = self.act(c)
+        
+        c = c.view(c.shape[0], -1)
+        c = self.dense1(c)
+        c = self.act(c)
+        c = self.drop(c)
+        c = self.dense2(c)
+        
+        return c
+
+
+class Discriminator_StandFord(nn.Module):
+    def __init__(self, i_size, s_size, num_classes=6, in_channels = 3):
+
+        '''
+        0 for Fake/Generated
+        1 for True/Ground Truth
+
+        num_classes: number of classes (for seg branch)
+        in_channels: number of channels (for original image)
+        '''
+        # I assume they are the same
+        assert i_size == s_size, "image size and segmentation/ground size are not the same"
+
+        super().__init__()
+        i_channel = [64]
+        s_channel = [64]
+        c_channel = [128,256,512,1024,1]
+        i_kernel  = [5]
+        c_kernel  = [3,3,3,3,3]
+
+        self.conv1_i = nn.Conv2d(in_channels=in_channels,  out_channels=i_channel[0], kernel_size=i_kernel[0])
+        self.conv1_s = nn.Conv2d(in_channels=num_classes,  out_channels=s_channel[0], kernel_size=i_kernel[0])
+
+        self.conv1_c = nn.Conv2d(in_channels=i_channel[0] + s_channel[0], out_channels=c_channel[0], kernel_size=c_kernel[0])
+        self.conv2_c = nn.Conv2d(in_channels=c_channel[0], out_channels=c_channel[1], kernel_size=c_kernel[1])
+        self.conv3_c = nn.Conv2d(in_channels=c_channel[1], out_channels=c_channel[2], kernel_size=c_kernel[2])
+        self.conv4_c = nn.Conv2d(in_channels=c_channel[2], out_channels=c_channel[3], kernel_size=c_kernel[3])
+        self.conv5_c = nn.Conv2d(in_channels=c_channel[3], out_channels=c_channel[4], kernel_size=c_kernel[4])
+
+        self.bni     = nn.BatchNorm2d(num_features=i_channel[0])
+        self.bns     = nn.BatchNorm2d(num_features=s_channel[0])
+
+        self.bn1c    = nn.BatchNorm2d(num_features=c_channel[0])
+        self.bn2c    = nn.BatchNorm2d(num_features=c_channel[1])
+        self.bn3c    = nn.BatchNorm2d(num_features=c_channel[2])
+        self.bn4c    = nn.BatchNorm2d(num_features=c_channel[3])
+        self.bn5c    = nn.BatchNorm2d(num_features=c_channel[4])
+
+        self.maxpool = nn.MaxPool2d(3)
+        self.Adapool = nn.AdaptiveAvgPool2d((3,3))
+        self.act     = F.relu
+        # Guruntee the output is all positive
+        self.finalact= torch.sigmoid
+        # self.finalact= nn.Softplus()
+    
+    def forward(self, img, seg):
+        x1 = img # original image
+        x2 = seg # could be ground truth or prediction
+        
+        # img
+        x1 = self.bni(self.conv1_i(x1))
+        x1 = self.act(x1)
+        
+        # seg
+        x2 = self.bns(self.conv1_s(x2))
+        x2 = self.act(x2)
+        
+        concat = torch.cat([x1, x2], dim=1)
+        
+        # c = self.act(self.bn1c(self.conv1_c(concat)))
+        # c = self.act(self.bn2c(self.conv2_c(c)))
+        # c = self.act(self.bn3c(self.conv3_c(c)))
+        # c = self.act(self.bn4c(self.conv4_c(c)))
+
+
+        c = self.act(self.conv1_c(concat))
+        c = self.act(self.conv2_c(c))
+        c = self.act(self.conv3_c(c))
+        c = self.act(self.conv4_c(c))
+
+        c = self.Adapool(c)
+        # c = self.bn5c(self.conv5_c(c))
+        c = self.conv5_c(c)
+        # c = self.act(c)
+        c = self.finalact(c)
+        c = c.squeeze()
+        
+        return c
+
 
 
 
@@ -785,28 +979,48 @@ if __name__ == '__main__':
     warnings.filterwarnings("ignore")
 
     # ----- Dataset Inspectation -----
-    # dataset = COCODetection(image_path=cfg.dataset.train_images,
-    #                         info_file=cfg.dataset.train_info,
-    #                         transform=BaseTransform(MEANS))
+    dataset = COCODetection(image_path=cfg.dataset.train_images,
+                            info_file=cfg.dataset.train_info,
+                            transform=SSDAugmentation(MEANS))
     # ----- output format ----- 
     # >>> im, (gt, masks, num_crowds)
-    # data_loader = data.DataLoader(dataset,batch_size=1,shuffle=False)
-    # >>> (bacth, im), ((batch,gt), (batch,masks), (batch,num_crowds))
-    # ----- output dim ----- 
-    # >>> (bacth, im), ((batch,gt), (batch,masks), (batch,num_crowds))
-    # img = next(iter(data_loader))
-    # print(img[0][0].shape)
-    # ----- Input image size is [3, 550, 550] ----- 
-    # print(img[1][0][0])
-    # ----- Ground Truth format ----- 
-    # >>> (number of gt, [x,y,width,height,gt label])
-    # print(img[1][1][0].shape)
-    # ----- While training ----- 
-    # >>> Mask format is [3, 550, 550]
+    data_loader = data.DataLoader(dataset,batch_size=2,shuffle=False,collate_fn=detection_collate,pin_memory=True)
+    # detection_collate
+    # Custom collate fn for dealing with batches of images that have a different
+    # number of associated object annotations (bounding boxes).
+    # 1) (tensor) batch of images stacked on their 0 dim
+    # 2) (list<tensor>, list<tensor>, list<int>) annotations for a given image are stacked
+    #     on 0 dim. The output gt is a tuple of annotations and masks.
+    #   imgs, (targets, masks, num_crowds)
+    datum = next(iter(data_loader))
+    # print(len(datum))
+    # >>> 2
+    # ----- img ----- 
+    # show the batch
+    # print(len(datum[0]))
+    # show image size
+    # print(datum[0][0].size())
+    # >>> torch.Size([3, 550, 550])
+
+    # ----- Target format ----- 
+    # show the batch
+    # print(len(datum[1][0]))
+    # show the targets size
+    print(datum[1][0][0].size())
+    # >>> torch.Size([2, 5])
+    # gt number, (x, y, h, w, label)
+    
+    # ----- Mask format ----- 
+    # show batch
+    # print(len(datum[1][1]))
+    # While training
+    # print(datum[1][1][0].size())
+    # >>> torch.Size([3, 550, 550])
+    # gt number, h, w
     # ----- If validation ----- 
     # >>> Mask format is original image format
     
-    # ----- Example of output ----- 
+    # ----- Example of input ----- 
     # img_np = img[1][1][0].numpy()
     # img_np = img_np.transpose(2,1,0)*200
     # cv2.imwrite('/home/rico-li/Job/豐興鋼鐵/EDA/img_np.jpg', img_np) 
@@ -821,53 +1035,100 @@ if __name__ == '__main__':
     # img = torch.from_numpy(img)
     # img = img.unsqueeze(0).cuda().float()
 
-    # ----- Net Inspectation ----- 
+    # # ----- Net Inspectation ----- 
     # net = Yolact(torchout=True)
     # net.load_weights('weights/yolact_base_1249_60000.pth')
     # net.training = False
     # pred_head, pred_outs = net(img)
     # print(pred_head)
-    # >>> ['loc', 'conf', 'mask', 'priors', 'proto']
+    # # >>> ['loc', 'conf', 'mask', 'priors', 'proto']
     # print([i.size() for i in pred_outs])
 
+    # ----- Check the process in the trainning -----
+    # net = Yolact(test_code=False,torchout=False)
+    # net.load_weights('weights/yolact_base_1249_60000.pth')
+    # net.training = True
+    # ----- Loss Inspectation -----
+    # pred_seg = True
+
+    # cfg.dataset = metal2020_dataset
+    # cfg.config  = yolact_base_config
+    # criterion = MultiBoxLoss(num_classes=cfg.num_classes,
+    #                          pos_threshold=cfg.positive_iou_threshold,
+    #                          neg_threshold=cfg.negative_iou_threshold,
+    #                          negpos_ratio=cfg.ohem_negpos_ratio, pred_seg=pred_seg)
+    # net = CustomDataParallel(NetLoss(net, criterion, pred_seg=pred_seg))
+    # args.batch_alloc = [1]
+    # dataset = COCODetection(image_path=cfg.dataset.train_images,
+    #                         info_file=cfg.dataset.train_info,
+    #                         transform=SSDAugmentation(MEANS))
+    # data_loader = data.DataLoader(dataset, batch_size=1,
+    #                               shuffle=False, collate_fn=detection_collate)
+    # datum = next(iter(data_loader))
+    # Ground truth Mask 
+    # >>> datum[1][1][0]
+    # if pred_seg:
+    #     losses, pred_seg_list, label_t_list = net(datum)
+    #     pred_seg_list = [torch.clamp(v.permute(2,1,0).contiguous(), 0, 1) for v in pred_seg_list]
+    #     b = len(pred_seg_list) # batch size
+    #     # print([i.size() for i in pred_seg_list])
+    #     # print([i.size() for i in label_t_list])
+    #     _, h, w = pred_seg_list[0].size()
+    #     # neglact the background class
+    #     pred_seg_clas = torch.zeros(b, cfg.num_classes-1, h, w)
+    #     for idx in range(b):
+    #         for i, label in enumerate(label_t_list[idx]):
+    #             pred_seg_clas[idx, label, ...] += pred_seg_list[idx][i,...]
+
+    #     print(pred_seg_clas[0])
+    #     print([pred_seg_clas[0][i] for i in label_t_list[0]])
+
+        # npimg = pred_seg_list[0][0,...].detach().cpu().numpy()*255
+        # from PIL import Image
+        # im = Image.fromarray(npimg)
+        # im = im.convert('L')
+        # im.save('pred_seg_list.jpg')
+
+    # else:
+    #     losses = net(datum)
+    #     print(losses)
+    # ----- output format -----
+    # >>> {'B': tensor(0.1974, grad_fn=<DivBackward0>), 'M': tensor(0.2925, grad_fn=<DivBackward0>), 
+    # >>> 'C': tensor(2.8976, grad_fn=<DivBackward0>), 'S': tensor(0.0147, grad_fn=<DivBackward0>)}
+    # Loss Key:
+    #  - B: Box Localization Loss
+    #  - C: Class Confidence Loss
+    #  - M: Mask Loss
+    #  - P: Prototype Loss
+    #  - D: Coefficient Diversity Loss
+    #  - E: Class Existence Loss
+    #  - S: Semantic Segmentation Loss
+
+    # ----- Check the process in the detection -----
+    # net = Yolact(test_code=False,torchout=False)
+    # net.load_weights('weights/yolact_base_1249_60000.pth')
+    # net.training = False
+
+    # cfg.dataset = metal2020_dataset
+    # cfg.config  = yolact_base_config
+    # criterion = MultiBoxLoss(num_classes=cfg.num_classes,
+    #                          pos_threshold=cfg.positive_iou_threshold,
+    #                          neg_threshold=cfg.negative_iou_threshold,
+    #                          negpos_ratio=cfg.ohem_negpos_ratio)
+    # net = CustomDataParallel(NetLoss(net, criterion))
+    # args.batch_alloc = [1]
+    # dataset = COCODetection(image_path=cfg.dataset.valid_images,
+    #                         info_file=cfg.dataset.valid_info,
+    #                         transform=BaseTransform(MEANS))
+    # data_loader = data.DataLoader(dataset, batch_size=1,
+    #                               shuffle=False, collate_fn=detection_collate)
+    # datum = next(iter(data_loader))
+    # output = net(datum)
     # ----- Yolact net output format -----
     # >>> (batch, {'detection':, 'net':})
     # ----- detection format -----
     # >>> {'box':, 'mask':, 'class':, 'score':, 'proto':]}
 
-    # ----- Check the process in the trainning -----
-    net = Yolact(test_code=False,torchout=False)
-    net.load_weights('weights/yolact_base_1249_60000.pth')
-    net.training = True
-    # ----- Loss Inspectation -----
-    cfg.dataset = metal2020_dataset
-    cfg.config  = yolact_base_config
-    criterion = MultiBoxLoss(num_classes=cfg.num_classes,
-                             pos_threshold=cfg.positive_iou_threshold,
-                             neg_threshold=cfg.negative_iou_threshold,
-                             negpos_ratio=cfg.ohem_negpos_ratio)
-    net = CustomDataParallel(NetLoss(net, criterion))
-    # net = net.cuda()
-    args.batch_alloc = [1]
-    dataset = COCODetection(image_path=cfg.dataset.train_images,
-                            info_file=cfg.dataset.train_info,
-                            transform=SSDAugmentation(MEANS))
-    data_loader = data.DataLoader(dataset, batch_size=1,
-                                  shuffle=False, collate_fn=detection_collate)
-    datum = next(iter(data_loader))
-    losses = net(datum)
-    print(losses)
-    # ----- output format -----
-    # >>> {'B': tensor(0.1974, grad_fn=<DivBackward0>), 'M': tensor(0.2925, grad_fn=<DivBackward0>), 
-    # >>> 'C': tensor(2.8976, grad_fn=<DivBackward0>), 'S': tensor(0.0147, grad_fn=<DivBackward0>)}
-    # Loss Key:
-        #  - B: Box Localization Loss
-        #  - C: Class Confidence Loss
-        #  - M: Mask Loss
-        #  - P: Prototype Loss
-        #  - D: Coefficient Diversity Loss
-        #  - E: Class Existence Loss
-        #  - S: Semantic Segmentation Loss
 
     # fakeimg1 = torch.Tensor(1,512,128,128)
     # fakeimg2 = torch.Tensor(1,1024,128,128)
@@ -899,3 +1160,11 @@ if __name__ == '__main__':
     
     # torch.onnx.export(pred, fpnout[0], 'runs/pred.onnx')
     # netron.start('runs/pred.onnx')
+
+
+    # img = torch.zeros([2,3,550,550])
+    # seg = torch.zeros([2,7,550,550])
+    # _, in_channels, i_size, _ = img.size()
+    # _, NUM_CLASSES, s_size, _ = seg.size()
+    # discriminator = Discriminator(in_channels = in_channels, NUM_CLASSES = NUM_CLASSES, i_size=i_size, s_size=s_size)
+    # c = discriminator(img, seg)

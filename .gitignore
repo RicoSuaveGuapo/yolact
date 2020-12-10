@@ -160,6 +160,8 @@ vidres/
 _.py
 
 *.png
+*.jpg
 *.pth
 data/
 runs/
+*.onnx
