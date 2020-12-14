@@ -707,9 +707,14 @@ coco_base_config = Config({
 yolact_base_config = coco_base_config.copy({
     'name': 'yolact_base',
 
-    # NOTE:
+    # NOTE: GAN related hyperparameters
     'pred_seg': True,
-    'lambda_dis': 2,
+    # turn True in the train_gan.py
+    'gan_eval': False,
+    'lambda_dis': 1E-2,
+    'gen_iter':500,
+    'dis_iter':20,
+    'dis_lr': 1E-4,
 
     # Dataset stuff
     # NOTE: Original

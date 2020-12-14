@@ -226,7 +226,78 @@ class Discriminator_StandFord(nn.Module):
         
         return c
 
+class Discriminator_Dcgan(nn.Module):
+    def __init__(self, i_size, s_size, num_classes=6, in_channels = 3):
 
+        '''
+        0 for Fake/Generated
+        1 for True/Ground Truth
+
+        num_classes: number of classes (for seg branch)
+        in_channels: number of channels (for original image)
+        '''
+        # I assume they are the same
+        assert i_size == s_size, "image size and segmentation/ground size are not the same"
+
+        super().__init__()
+        i_channel = [64]
+        s_channel = [64]
+        c_channel = [128,256,512,1024,1]
+        i_kernel  = [5]
+        c_kernel  = [3,3,3,3,3]
+
+        self.conv1_i = nn.Conv2d(in_channels=in_channels,  out_channels=i_channel[0], kernel_size=i_kernel[0], bias=False)
+        self.conv1_s = nn.Conv2d(in_channels=num_classes,  out_channels=s_channel[0], kernel_size=i_kernel[0], bias=False)
+
+        self.conv1_c = nn.Conv2d(in_channels=i_channel[0] + s_channel[0], out_channels=c_channel[0], kernel_size=c_kernel[0], bias=False)
+        self.conv2_c = nn.Conv2d(in_channels=c_channel[0], out_channels=c_channel[1], kernel_size=c_kernel[1], bias=False)
+        self.conv3_c = nn.Conv2d(in_channels=c_channel[1], out_channels=c_channel[2], kernel_size=c_kernel[2], bias=False)
+        self.conv4_c = nn.Conv2d(in_channels=c_channel[2], out_channels=c_channel[3], kernel_size=c_kernel[3], bias=False)
+        self.conv5_c = nn.Conv2d(in_channels=c_channel[3], out_channels=c_channel[4], kernel_size=c_kernel[4], bias=False)
+
+        self.bni     = nn.BatchNorm2d(num_features=i_channel[0])
+        self.bns     = nn.BatchNorm2d(num_features=s_channel[0])
+
+        self.bn1c    = nn.BatchNorm2d(num_features=c_channel[0])
+        self.bn2c    = nn.BatchNorm2d(num_features=c_channel[1])
+        self.bn3c    = nn.BatchNorm2d(num_features=c_channel[2])
+        self.bn4c    = nn.BatchNorm2d(num_features=c_channel[3])
+        self.bn5c    = nn.BatchNorm2d(num_features=c_channel[4])
+
+        self.maxpool = nn.MaxPool2d(3)
+        self.Adapool = nn.AdaptiveAvgPool2d((3,3))
+        # NOTE
+        self.act     = nn.LeakyReLU(0.2, inplace=True)
+        # Guruntee the output is all positive
+        self.finalact= nn.Sigmoid()
+    
+    def forward(self, img, seg):
+        x1 = img # original image
+        x2 = seg # could be ground truth or prediction
+        
+        # img
+        x1 = self.bni(self.conv1_i(x1))
+        x1 = self.act(x1)
+        
+        # seg
+        x2 = self.bns(self.conv1_s(x2))
+        x2 = self.act(x2)
+        
+        concat = torch.cat([x1, x2], dim=1)
+        
+        c = self.act(self.bn1c(self.conv1_c(concat)))
+        c = self.act(self.bn2c(self.conv2_c(c)))
+        c = self.act(self.bn3c(self.conv3_c(c)))
+        c = self.act(self.bn4c(self.conv4_c(c)))
+
+        c = self.Adapool(c)
+        # c = self.bn5c(self.conv5_c(c))
+        c = self.conv5_c(c)
+        # c = self.act(c)
+        c = self.finalact(c)
+        c = c.squeeze()
+        
+        return c
 
 
 class Concat(nn.Module):
@@ -876,6 +947,12 @@ class Yolact(nn.Module):
             else:
                 return pred_outs
 
+        # NOTE
+        # -----  GAN evalation  -----
+        elif cfg.pred_seg and cfg.gan_eval:
+            pred_outs['segm'] = self.semantic_seg_conv(outs[0])
+            return pred_outs
+
         # ----- Validation/Test -----
         else:
             if cfg.use_mask_scoring:
@@ -968,6 +1045,7 @@ if __name__ == '__main__':
     import netron
     import torch.utils.data as data
     from torch.utils.tensorboard import SummaryWriter
+    from tqdm import tqdm
 
     from data import *
     from data import MEANS, STD, cfg
@@ -979,12 +1057,12 @@ if __name__ == '__main__':
     warnings.filterwarnings("ignore")
 
     # ----- Dataset Inspectation -----
-    dataset = COCODetection(image_path=cfg.dataset.train_images,
-                            info_file=cfg.dataset.train_info,
-                            transform=SSDAugmentation(MEANS))
+    # dataset = COCODetection(image_path=cfg.dataset.train_images,
+    #                         info_file=cfg.dataset.train_info,
+    #                         transform=SSDAugmentation(MEANS))
     # ----- output format ----- 
     # >>> im, (gt, masks, num_crowds)
-    data_loader = data.DataLoader(dataset,batch_size=2,shuffle=False,collate_fn=detection_collate,pin_memory=True)
+    # data_loader = data.DataLoader(dataset,batch_size=2,shuffle=False,collate_fn=detection_collate,pin_memory=True)
     # detection_collate
     # Custom collate fn for dealing with batches of images that have a different
     # number of associated object annotations (bounding boxes).
@@ -992,7 +1070,26 @@ if __name__ == '__main__':
     # 2) (list<tensor>, list<tensor>, list<int>) annotations for a given image are stacked
     #     on 0 dim. The output gt is a tuple of annotations and masks.
     #   imgs, (targets, masks, num_crowds)
-    datum = next(iter(data_loader))
+    # datum = next(iter(data_loader))
+    # Because in the discriminator training, we do not 
+    # want the gradient flow back to the generator part
+    # we detach datum. Turn out that we can just modify the
+    # Netloss
+    # detatch_datum = []
+    # for i, data in enumerate(datum):
+    #     if i == 0:
+    #         imgs = data
+    #         imgs = [img.detach() for img in imgs]
+    #         detatch_datum.append(imgs)
+    #     else:
+    #         (targets, masks, num_crowds) = data
+    #         targets   = [target.detach() for target in targets]
+    #         masks     = [mask.detach() for mask in masks]
+    #         new_datum = (targets, masks, num_crowds)
+    #         detatch_datum.append(new_datum)
+
+    # detatch_datum = tuple(detatch_datum)
+    
     # print(len(datum))
     # >>> 2
     # ----- img ----- 
@@ -1006,7 +1103,7 @@ if __name__ == '__main__':
     # show the batch
     # print(len(datum[1][0]))
     # show the targets size
-    print(datum[1][0][0].size())
+    # print(datum[1][0][0].size())
     # >>> torch.Size([2, 5])
     # gt number, (x, y, h, w, label)
     
@@ -1036,9 +1133,11 @@ if __name__ == '__main__':
     # img = img.unsqueeze(0).cuda().float()
 
     # # ----- Net Inspectation ----- 
-    # net = Yolact(torchout=True)
+    # net = Yolact(torchout=False)
     # net.load_weights('weights/yolact_base_1249_60000.pth')
-    # net.training = False
+    # net.training = True
+    # preds = net(img)
+    # print(type(preds['loc'])
     # pred_head, pred_outs = net(img)
     # print(pred_head)
     # # >>> ['loc', 'conf', 'mask', 'priors', 'proto']
@@ -1065,6 +1164,7 @@ if __name__ == '__main__':
     # data_loader = data.DataLoader(dataset, batch_size=1,
     #                               shuffle=False, collate_fn=detection_collate)
     # datum = next(iter(data_loader))
+    # losses = net(datum)
     # Ground truth Mask 
     # >>> datum[1][1][0]
     # if pred_seg:
@@ -1168,3 +1268,39 @@ if __name__ == '__main__':
     # _, NUM_CLASSES, s_size, _ = seg.size()
     # discriminator = Discriminator(in_channels = in_channels, NUM_CLASSES = NUM_CLASSES, i_size=i_size, s_size=s_size)
     # c = discriminator(img, seg)
+
+    # --- GAN evaluation ---
+    # Note that the cfg.pred_seg must be True for the following
+    # cfg.gan_eval = True
+    # net = Yolact(torchout=False)
+    # net.load_weights('weights/yolact_base_1249_60000.pth')
+    # net.eval()
+    # pred_seg = True
+
+    # cfg.dataset = metal2020_dataset
+    # cfg.config  = yolact_base_config
+    # criterion = MultiBoxLoss(num_classes=cfg.num_classes,
+    #                          pos_threshold=cfg.positive_iou_threshold,
+    #                          neg_threshold=cfg.negative_iou_threshold,
+    #                          negpos_ratio=cfg.ohem_negpos_ratio, pred_seg=pred_seg)
+    # net = CustomDataParallel(NetLoss(net, criterion, pred_seg=pred_seg))
+    # args.batch_alloc = [3]
+    # val_dataset = COCODetection(image_path=cfg.dataset.valid_images,
+    #                                 info_file=cfg.dataset.valid_info,
+    #                                 transform=BaseTransform(MEANS))
+    # val_loader  = data.DataLoader(val_dataset, batch_size=3,
+    #                               num_workers=12*2,
+    #                               shuffle=True, collate_fn=detection_collate,
+    #                               pin_memory=True)
+    # for datum in tqdm(val_loader, desc='GAN Validation'):
+    #     with torch.no_grad():
+    #         losses, seg_list, pred_list = net(datum)
+
+    # for val_i in range(len(val_dataset)):
+    #     img, gt, gt_masks, h, w, num_crowd = val_dataset.pull_item(val_i)
+    #     batch = img.unsqueeze(0).cuda()
+    #     with torch.no_grad():
+    #         preds = net(batch)
+    #         print(preds[0].keys())
+    #         break
+

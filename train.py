@@ -147,8 +147,8 @@ class NetLoss(nn.Module):
     def forward(self, images, targets, masks, num_crowds):
         preds = self.net(images)
         if self.pred_seg:
-            losses, pred_seg, label_t = self.criterion(self.net, preds, targets, masks, num_crowds)
-            return losses, pred_seg, label_t
+            losses, seg_list, pred_list = self.criterion(self.net, preds, targets, masks, num_crowds)
+            return losses, seg_list, pred_list
         else:
             losses = self.criterion(self.net, preds, targets, masks, num_crowds)
             return losses
