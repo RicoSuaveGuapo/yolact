@@ -212,6 +212,38 @@ def freeze_pretrain(model, freeze=True):
         for par in model.parameters():
             par.requires_grad = True
 
+def seg_mask_clas(seg_list, pred_list, datum):
+    # need to transform seg_list to [b, classes, h, w]
+    seg_list = [v.permute(2,0,1).contiguous() for v in seg_list]
+    b = len(seg_list) # batch size
+    _, seg_h, seg_w = seg_list[0].size()
+
+    # empty tensors to be pasted on later (neglact the background class)
+    seg_clas    = torch.zeros(b, cfg.num_classes-1, seg_h, seg_w)
+    mask_clas   = torch.zeros(b, cfg.num_classes-1, seg_h, seg_w)
+
+    # TODO: might change to upsample the prediction map
+    # seg_clas = interpolate(seg_clas, size = (550,550), 
+    #                        mode='bilinear',align_corners=True)
+
+    # get the gt target label
+    target_list = [target for target in datum[1][0]]
+    # input ground truth mask is [b, instances, 550, 550]
+    # need to interpolate to     [b, classes, seg_h, seg_w]
+    mask_list   = [interpolate(mask.unsqueeze(0), size = (seg_h,seg_w),mode='bilinear', \
+                                        align_corners=False).squeeze() for mask in datum[1][1]]
+    # all prepared, let's paste them all!
+    # NOTE
+    # === same class will be pasted together ===
+    for idx in range(b):
+        for i, (pred, i_target) in enumerate(zip(pred_list[idx], target_list[idx])):
+            seg_clas[idx,  pred, ...]                += seg_list[idx][i,...]
+            mask_clas[idx, i_target[-1].long(), ...] += mask_list[idx][i,...]
+
+    seg_clas = torch.clamp(seg_clas, 0, 1)
+
+    return seg_clas, mask_clas, b, (seg_h, seg_w)
+
 
 def train():
     if not os.path.exists(args.save_folder):
@@ -275,10 +307,10 @@ def train():
     #                         weight_decay=args.decay)
     #     schedule_dis  = ReduceLROnPlateau(optimizer_dis, mode = 'min', patience=6, min_lr=1E-6)
 
-    # NOTE: Using the Ranger Optimizer
+    # NOTE: Using the Ranger Optimizer for the generator
     optimizer_gen     = Ranger(net.parameters(), lr = args.lr, weight_decay=args.decay)
     if cfg.pred_seg:
-        optimizer_dis = Ranger(dis_net.parameters(), lr=cfg.dis_lr, weight_decay=args.decay)
+        optimizer_dis = optim.SGD(dis_net.parameters(), lr=cfg.dis_lr)
         schedule_dis  = ReduceLROnPlateau(optimizer_dis, mode = 'min', patience=6, min_lr=1E-6)
 
     criterion     = MultiBoxLoss(num_classes=cfg.num_classes,
@@ -382,10 +414,10 @@ def train():
                 optimizer_gen.zero_grad()
                 # NOTE
                 if cfg.pred_seg:
-                    # ----- Discriminator part -----
+                    # ====== GAN Train ======
                     optimizer_dis.zero_grad()
                     dis_net.zero_grad()
-                    # train the gen and dis in different iteration
+                    # train the gen and dis in different iteration count
                     it_alter_period = iteration % (cfg.gen_iter + cfg.dis_iter)
                     if it_alter_period >= cfg.gen_iter:
                         freeze_pretrain(yolact_net, freeze=True)
@@ -394,6 +426,51 @@ def train():
                         if it_alter_period == (cfg.gen_iter+1):
                             print('--- Generator     freeze   ---')
                             print('--- Discriminator training ---')
+
+                        # ----- Discriminator part -----
+                        # seg_list  is the prediction mask
+                        # can be regarded as generated images from YOLACT
+                        # pred_list is the prediction label
+                        # seg_list  dim: list of (138,138,instances)
+                        # pred_list dim: list of (instances)
+                        losses, seg_list, pred_list = net(datum)
+                        seg_clas, mask_clas, b, seg_size = seg_mask_clas(seg_list, pred_list, datum)
+                        
+                        # input image size is [b, 3, 550, 550]
+                        # downsample to       [b, 3, seg_h, seg_w]
+                        image    = interpolate(torch.stack(datum[0]), size = seg_size, 
+                                                    mode='bilinear',align_corners=False)
+
+                        # Because in the discriminator training, we do not 
+                        # want the gradient flow back to the generator part
+                        # we detach seg_clas (mask_clas come the data, does not have grad)
+                        seg_input   = seg_clas.clone().detach()
+                        output_pred = dis_net(img = image, seg = seg_input)
+                        output_grou = dis_net(img = image, seg = mask_clas)
+
+                        if iteration % (cfg.gen_iter + cfg.dis_iter) == 0:
+                            print(f'Probability of fake is fake: {output_pred.mean().item():.2f}')
+                            print(f'Probability of real is real: {output_grou.mean().item():.2f}')
+
+                        # 0 for Fake/Generated
+                        # 1 for True/Ground Truth
+                        fake_label = torch.zeros(b)
+                        real_label = torch.ones(b)
+
+                        # Advice of practical implementation 
+                        # from https://arxiv.org/abs/1611.08408
+                        # loss_pred = -criterion_dis(output_pred,target=real_label)
+                        loss_pred = criterion_dis(output_pred,target=fake_label)
+                        loss_grou = criterion_dis(output_grou,target=real_label)
+                        loss_dis  = loss_pred + loss_grou
+                        
+                        # TODO: Grid Search this one
+                        lambda_dis = cfg.lambda_dis
+                        loss_dis   = lambda_dis*loss_dis
+                        # Backprop of the discriminator
+                        loss_dis.backward()
+                        optimizer_dis.step()
+
                     else:
                         freeze_pretrain(yolact_net, freeze=False)
                         freeze_pretrain(net, freeze=False)
@@ -401,93 +478,39 @@ def train():
                         if it_alter_period == 0:
                             print('--- Generator     training ---')
                             print('--- Discriminator freeze   ---')
-
-                    # pred_seg dim: e.g. (138,138,instances=3)
-                    # Specify the net is in the discriminator
-                    # see the Netloss for detail
-                    net.in_dis = True
-                    losses, seg_list, pred_list = net(datum)
-                    # need to transform to [b, classes, h, w]
-                    seg_list = [v.permute(2,1,0).contiguous() for v in seg_list]
-                    b = len(seg_list) # batch size
-                    _, seg_h, seg_w = seg_list[0].size()
-
-                    # a empty tensor to be pasted on (neglact the background class)
-                    seg_clas    = torch.zeros(b, cfg.num_classes-1, seg_h, seg_w)
-                    mask_clas   = torch.zeros(b, cfg.num_classes-1, seg_h, seg_w)
-                    # get the gt target
-                    target_list = [target for target in datum[1][0]]
-                    # TODO: might change to upsample the prediction map
-                    # seg_clas = interpolate(seg_clas, size = (550,550), 
-                    #                        mode='bilinear',align_corners=True)
-                    # Input image size is [b, 3, 550, 550]
-                    # Downsample to       [b, 3, seg_h, seg_w]
-                    # Input ground truth is [b, instances, 550, 550]
-                    # need to transform to  [b, classes, seg_h, seg_w]
-                    # note the detach
-                    mask_list   = [interpolate(mask.unsqueeze(0), size = (seg_h,seg_w),mode='bilinear', \
-                                    align_corners=False).squeeze() for mask in datum[1][1]]
-
-                    for idx in range(b):
-                        for i, (pred, i_target) in enumerate(zip(pred_list[idx], target_list[idx])):
-                            seg_clas[idx, pred, ...]                 += seg_list[idx][i,...]
-                            mask_clas[idx, i_target[-1].long(), ...] += mask_list[idx][i,...]
                         
-                    seg_clas = torch.clamp(seg_clas, 0, 1)
-                    image    = interpolate(torch.stack(datum[0]), size = (seg_h,seg_w), 
-                                                mode='bilinear',align_corners=False)
-
-                    # Because in the discriminator training, we do not 
-                    # want the gradient flow back to the generator part
-                    # we detach seg_clas and mask_clas here
-                    output_pred = dis_net(img = image, seg = seg_clas.detach())
-                    output_grou = dis_net(img = image, seg = mask_clas.detach())
-
-                    if iteration % (cfg.gen_iter + cfg.dis_iter) == 0:
-                        print(f'Probability of fake is fake: {output_pred.mean().item():.2f}')
-                        print(f'Probability of real is real: {output_grou.mean().item():.2f}')
-
-                    # 0 for Fake/Generated
-                    # 1 for True/Ground Truth
-                    # Take the advice of practical implementation 
-                    # from https://arxiv.org/abs/1611.08408
-                    fake = 0.
-                    real = 1.
-                    fake_label = torch.full((b,), fake, dtype=torch.float).cuda()
-                    real_label = torch.full((b,), real, dtype=torch.float).cuda()
-                    # Take the advice of practical implementation 
-                    # from https://arxiv.org/abs/1611.08408
-                    # loss_pred = -criterion_dis(output_pred,target=real_label)
-                    loss_pred = criterion_dis(output_pred,target=fake_label)
-                    loss_grou = criterion_dis(output_grou,target=real_label)
-                    loss_dis  = loss_pred + loss_grou
-
-                    # TODO: Grid Search this one
-                    lambda_dis = cfg.lambda_dis
-                    loss_dis   = lambda_dis*loss_dis
-                    # Backprop of the discriminator
-                    loss_dis.backward()
-                    optimizer_dis.step()
-
-                    # ----- Generator part -----
-                    # zero grad first
-                    optimizer_gen.zero_grad()
-                    net.zero_grad()
-                    # Since we just updated D, perform another forward pass of all-fake batch through D
-                    output = dis_net(img = image, seg = seg_clas)
-                    # Since the log(1-D(G(x))) not provide sufficient gradients
-                    # We want log(D(G(x)) instead, this can be achieve by
-                    # use the real_label as target.
-                    # This step is crutial for the information of discriminator info
-                    # to go into the generator.
-                    # Calculate G's loss based on this output
-                    loss_gen = criterion_dis(output,target=real_label)
-                    loss_gen.backward()
-                    # Do this to free up vram even if loss is not finite
-                    if torch.isfinite(loss).item():
-                        optimizer_gen.step()       
+                        # ----- Generator part -----
+                        net.zero_grad()
+                        losses, seg_list, pred_list = net(datum)
+                        seg_clas, mask_clas, b, seg_size = seg_mask_clas(seg_list, pred_list, datum)
+                        image    = interpolate(torch.stack(datum[0]), size = seg_size, 
+                                                    mode='bilinear',align_corners=False)
+                        # Perform forward pass of all-fake batch through D
+                        # NOTE that seg_clas CANNOT detach, in order to flow the 
+                        # gradient back to the generator
+                        output = dis_net(img = image, seg = seg_clas)
+                        # Since the log(1-D(G(x))) not provide sufficient gradients
+                        # We want log(D(G(x)) instead, this can be achieve by
+                        # use the real_label as target.
+                        # This step is crucial for the information of discriminator
+                        # to go into the generator.
+                        # Calculate G's loss based on this output
+                        real_label = torch.ones(b)
+                        loss_gen = criterion_dis(output,target=real_label)
+                        if not it_alter_period >= cfg.gen_iter:
+                            # since the dis is already freeze, the gradients will only
+                            # record the YOLACT
+                            loss_gen.backward()
+                            # Do this to free up vram even if loss is not finite
+                            losses = { k: (v).mean() for k,v in losses.items() } # Mean here because Dataparallel
+                            loss = sum([losses[k] for k in losses])
+                            if torch.isfinite(loss).item():
+                                # since the optimizer_gen is for YOLACT only
+                                # only the gen will be updated
+                                optimizer_gen.step()       
                     
                 else:
+                    # ====== Normal YOLACT Train ======
                     # Forward Pass + Compute loss at the same time (see CustomDataParallel and NetLoss)
                     losses = net(datum)
                     losses = { k: (v).mean() for k,v in losses.items() } # Mean here because Dataparallel
@@ -517,7 +540,7 @@ def train():
                     
                     total = sum([loss_avgs[k].get_avg() for k in losses])
                     loss_labels = sum([[k, loss_avgs[k].get_avg()] for k in loss_types if k in losses], [])
-                    if cfg.pred_seg:
+                    if cfg.pred_seg and (it_alter_period >= cfg.gen_iter):
                         print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || Dis: %.2f || ETA: %s || timer: %.3f')
                                 % tuple([epoch, iteration] + loss_labels + [total, loss_dis, eta_str, elapsed]), flush=True)
                     else:
@@ -532,7 +555,7 @@ def train():
                     #  - E: Class Existence Loss
                     #  - S: Semantic Segmentation Loss
                     #  - T: Total loss
-                    #  -Dis: Discriminator Loss
+                    #  -Dis:Discriminator Loss
 
                 if args.log:
                     precision = 5

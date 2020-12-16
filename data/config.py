@@ -708,12 +708,15 @@ yolact_base_config = coco_base_config.copy({
     'name': 'yolact_base',
 
     # NOTE: GAN related hyperparameters
+    # Open up the GAN training
     'pred_seg': True,
     # turn True in the train_gan.py
     'gan_eval': False,
     'lambda_dis': 1E-2,
-    'gen_iter':500,
-    'dis_iter':20,
+    # number of generator training iteration
+    'gen_iter':100,
+    # number of discriminator training iteration
+    'dis_iter':100,
     'dis_lr': 1E-4,
 
     # Dataset stuff
