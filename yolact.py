@@ -300,6 +300,81 @@ class Discriminator_Dcgan(nn.Module):
         return c
 
 
+class Discriminator_Wgan(nn.Module):
+    def __init__(self, i_size, s_size, num_classes=6, in_channels = 3):
+
+        '''
+        0 for Fake/Generated
+        1 for True/Ground Truth
+
+        num_classes: number of classes (for seg branch)
+        in_channels: number of channels (for original image)
+        '''
+        # I assume they are the same
+        assert i_size == s_size, "image size and segmentation/ground size are not the same"
+
+        super().__init__()
+        i_channel = [64]
+        s_channel = [64]
+        c_channel = [128,256,512,1024,1]
+        i_kernel  = [5]
+        c_kernel  = [3,3,3,3,3]
+
+        self.conv1_i = nn.Conv2d(in_channels=in_channels,  out_channels=i_channel[0], kernel_size=i_kernel[0], bias=False)
+        self.conv1_s = nn.Conv2d(in_channels=num_classes,  out_channels=s_channel[0], kernel_size=i_kernel[0], bias=False)
+
+        self.conv1_c = nn.Conv2d(in_channels=i_channel[0], out_channels=c_channel[0], kernel_size=c_kernel[0], bias=False)
+        self.conv2_c = nn.Conv2d(in_channels=c_channel[0], out_channels=c_channel[1], kernel_size=c_kernel[1], bias=False)
+        self.conv3_c = nn.Conv2d(in_channels=c_channel[1], out_channels=c_channel[2], kernel_size=c_kernel[2], bias=False)
+        self.conv4_c = nn.Conv2d(in_channels=c_channel[2], out_channels=c_channel[3], kernel_size=c_kernel[3], bias=False)
+        self.conv5_c = nn.Conv2d(in_channels=c_channel[1], out_channels=c_channel[4], kernel_size=c_kernel[4], bias=False)
+
+        self.bni     = nn.BatchNorm2d(num_features=i_channel[0])
+        self.bns     = nn.BatchNorm2d(num_features=s_channel[0])
+
+        self.bn1c    = nn.BatchNorm2d(num_features=c_channel[0])
+        self.bn2c    = nn.BatchNorm2d(num_features=c_channel[1])
+        self.bn3c    = nn.BatchNorm2d(num_features=c_channel[2])
+        self.bn4c    = nn.BatchNorm2d(num_features=c_channel[3])
+        self.bn5c    = nn.BatchNorm2d(num_features=c_channel[4])
+
+        self.maxpool = nn.MaxPool2d(3)
+        self.Adapool = nn.AdaptiveAvgPool2d((3,3))
+        # NOTE
+        self.act     = nn.LeakyReLU(0.2, inplace=True)
+        # take the advice from WGAN
+        # self.finalact= nn.Sigmoid()
+    
+    def forward(self, img, seg):
+        x1 = img # original image
+        x2 = seg # could be ground truth or prediction
+        
+        # img
+        x1 = self.bni(self.conv1_i(x1))
+        x1 = self.act(x1)
+        
+        # seg
+        x2 = self.bns(self.conv1_s(x2))
+        x2 = self.act(x2)
+        
+        # NOTE
+        elem_mul = x1*x2
+        # concat = torch.cat([x1, x2], dim=1)
+        
+        # c = self.act(self.bn1c(self.conv1_c(concat)))
+        c = self.act(self.bn1c(self.conv1_c(elem_mul)))
+        c = self.act(self.bn2c(self.conv2_c(c)))
+        # c = self.act(self.bn3c(self.conv3_c(c)))
+        # c = self.act(self.bn4c(self.conv4_c(c)))
+
+        c = self.Adapool(c)
+        c = self.conv5_c(c)
+        # c = self.finalact(c)
+        c = c.squeeze()
+        
+        return c
+
+
 class Concat(nn.Module):
     def __init__(self, nets, extra_params):
         super().__init__()

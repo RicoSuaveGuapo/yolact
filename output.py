@@ -47,7 +47,7 @@ elif uid == 'root':
 
 # train
 # Local
-os.system('python -W ignore train_gan.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=3 --validation_epoch=16')
+os.system('python -W ignore train_gan_server.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=1 --validation_epoch=16')
 
 # Server Dell
 # python -W ignore train.py --config=yolact_base_config --batch_size=24 --batch_alloc=24 --dataset metal2020_server_dataset --validation_epoch=16
