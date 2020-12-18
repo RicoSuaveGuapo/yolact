@@ -11,7 +11,7 @@ from data import cfg, mask_type, MEANS, STD, activation_func
 from utils.augmentations import Resize
 from utils import timer
 from .box_utils import crop, sanitize_coordinates
-
+# NOTE
 def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
                 visualize_lincomb=False, crop_masks=True, score_threshold=0):
     """
@@ -92,7 +92,6 @@ def postprocess(det_output, w, h, batch_idx=0, interpolation_mode='bilinear',
 
         # Binarize the masks
         masks.gt_(0.5)
-
     
     boxes[:, 0], boxes[:, 2] = sanitize_coordinates(boxes[:, 0], boxes[:, 2], w, cast=False)
     boxes[:, 1], boxes[:, 3] = sanitize_coordinates(boxes[:, 1], boxes[:, 3], h, cast=False)

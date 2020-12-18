@@ -301,7 +301,7 @@ class Discriminator_Dcgan(nn.Module):
 
 
 class Discriminator_Wgan(nn.Module):
-    def __init__(self, i_size, s_size, num_classes=6, in_channels = 3):
+    def __init__(self, i_size, s_size, num_classes=1, in_channels = 3):
 
         '''
         0 for Fake/Generated
@@ -323,7 +323,7 @@ class Discriminator_Wgan(nn.Module):
         self.conv1_i = nn.Conv2d(in_channels=in_channels,  out_channels=i_channel[0], kernel_size=i_kernel[0], bias=False)
         self.conv1_s = nn.Conv2d(in_channels=num_classes,  out_channels=s_channel[0], kernel_size=i_kernel[0], bias=False)
 
-        self.conv1_c = nn.Conv2d(in_channels=i_channel[0], out_channels=c_channel[0], kernel_size=c_kernel[0], bias=False)
+        self.conv1_c = nn.Conv2d(in_channels=3, out_channels=c_channel[0], kernel_size=c_kernel[0], bias=False)
         self.conv2_c = nn.Conv2d(in_channels=c_channel[0], out_channels=c_channel[1], kernel_size=c_kernel[1], bias=False)
         self.conv3_c = nn.Conv2d(in_channels=c_channel[1], out_channels=c_channel[2], kernel_size=c_kernel[2], bias=False)
         self.conv4_c = nn.Conv2d(in_channels=c_channel[2], out_channels=c_channel[3], kernel_size=c_kernel[3], bias=False)
@@ -349,16 +349,18 @@ class Discriminator_Wgan(nn.Module):
         x1 = img # original image
         x2 = seg # could be ground truth or prediction
         
+        elem_mul = x1*x2
+
         # img
-        x1 = self.bni(self.conv1_i(x1))
-        x1 = self.act(x1)
+        # x1 = self.bni(self.conv1_i(x1))
+        # x1 = self.act(x1)
         
         # seg
-        x2 = self.bns(self.conv1_s(x2))
-        x2 = self.act(x2)
+        # x2 = self.bns(self.conv1_s(x2))
+        # x2 = self.act(x2)
         
         # NOTE
-        elem_mul = x1*x2
+        # elem_mul = x1*x2
         # concat = torch.cat([x1, x2], dim=1)
         
         # c = self.act(self.bn1c(self.conv1_c(concat)))
@@ -372,6 +374,7 @@ class Discriminator_Wgan(nn.Module):
         # c = self.finalact(c)
         c = c.squeeze()
         
+        # return elem_mul, c
         return c
 
 

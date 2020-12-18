@@ -714,12 +714,13 @@ yolact_base_config = coco_base_config.copy({
     'gan_eval': False,
     'lambda_dis': 1E-2,
     # number of generator training iteration
-    'gen_iter':10,
+    # 'gen_iter':10,
     # number of discriminator training iteration
-    'dis_iter':100,
-    'dis_lr': 1E-3,
+    'dis_iter':5,
+    # lr of discriminator, taken from WGAN
+    'dis_lr': 5E-5,
     # clip value for WGAN
-    'clip_value': 0.05,
+    'clip_value': 0.1,
 
     # Dataset stuff
     # NOTE: Original

@@ -512,6 +512,7 @@ class MultiBoxLoss(nn.Module):
         # and all the losses will be divided by num_pos at the end, so just one extra time.
         return cfg.mask_proto_coeff_diversity_alpha * loss.sum() / num_pos
 
+    # NOTE
     # ret = self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t, score_data, inst_data, labels)
     def lincomb_mask_loss(self, pos, idx_t, loc_data, mask_data, priors, proto_data, masks, 
                           gt_box_t, score_data, inst_data, labels, interpolation_mode='bilinear', pred_seg=False):
@@ -615,6 +616,15 @@ class MultiBoxLoss(nn.Module):
             pred_masks = proto_masks @ proto_coef.t()
             pred_masks = cfg.mask_proto_mask_activation(pred_masks)
             if pred_seg:
+                # mask = mask_clas.squeeze().cpu().detach().numpy()
+                # from PIL import Image
+                # seg = Image.fromarray(seg, 'L')
+                # mask = Image.fromarray(mask, 'L')
+                # seg.save('seg.png')
+                # mask.save('mask.png')
+                # raise RuntimeError
+                # pred_masks_gt05 = pred_masks.gt(0.5)
+                
                 pred_seg_list.append(pred_masks)
                 label_t_list.append(label_t)
 

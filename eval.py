@@ -132,6 +132,7 @@ coco_cats = {} # Call prep_coco_cats to fill this
 coco_cats_inv = {}
 color_cache = defaultdict(lambda: {})
 
+# NOTE
 def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, fps_str=''):
     """
     Note: If undo_transform=False then im_h and im_w are allowed to be None.
@@ -980,6 +981,10 @@ def evaluate(net:Yolact, dataset, train_mode=False):
 
             with timer.env('Network Extra'):
                 preds = net(batch)
+                # mask = preds[0]['detection']['mask']
+                # print(preds[0]['detection']['proto'].size())
+                # print(mask.size())
+                # print(mask)
             # Perform the meat of the operation here depending on our mode.
             if args.display:
                 img_numpy = prep_display(preds, img, h, w)

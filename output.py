@@ -3,7 +3,7 @@ import getpass
 import torch
 from time import time
 
-config   = 'yolact_plus_base_config'
+config   = 'yolact_base_config'
 kind = 'U100'
 assert kind in ['A30','U100','U150','All']
 
@@ -45,9 +45,9 @@ elif uid == 'root':
 # out_name = 'metal_img.png'
 
 
-# train
+# ===== train =====
 # Local
-os.system('python -W ignore train_gan_server.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=1 --validation_epoch=16')
+# os.system('python -W ignore train_gan_server.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=1 --validation_epoch=16')
 
 # Server Dell
 # python -W ignore train.py --config=yolact_base_config --batch_size=24 --batch_alloc=24 --dataset metal2020_server_dataset --validation_epoch=16
@@ -60,10 +60,12 @@ os.system('python -W ignore train_gan_server.py --config=yolact_base_config --da
 # os.system("nohup python -W ignore train.py --resume --config=yolact_base_config --batch_size=48 --batch_alloc=24,24 --dataset metal2020_server_dgx_dataset --validation_epoch=16 > train.log 2>&1 & ")
 
 # resume training
-# os.system(f"python -W ignore train_gan.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=3 --resume {pth_path} --validation_epoch=16")
+os.system(f"python -W ignore train_gan_server.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=2 --resume {pth_path} --validation_epoch=16")
 
+
+# ===== eval =====
 # Quantitative evaluation
-# os.system(f"python -W ignore eval.py --trained_model={pth_path} --config {config} --display_fps --fast_nms False")
+# os.system(f"python -W ignore eval.py --max_images 1 --no_bar --trained_model={pth_path} --config {config} --display_fps --fast_nms False")
 #
 # Output json file
 # os.system(f"python -W ignore eval.py --trained_model={pth_path} --output_coco_json")
@@ -78,4 +80,4 @@ os.system('python -W ignore train_gan_server.py --config=yolact_base_config --da
 # print(f'--- {len(counts)/(time()-start):.2f} fps ---')
 
 # Evaluate on a single image
-# os.system(f'python -W ignore eval.py --trained_model={pth_path} --fast_nms False --score_threshold=0.1 --top_k=15 --config {config} --image /home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/yolact_train/JPEGImages/mod_1500_curve_3_frame0551.jpg')
+# os.system(f'python -W ignore eval.py --trained_model={pth_path} --fast_nms False --score_threshold=0.1 --top_k=15 --config {config} --image /home/rico-li/Job/豐興鋼鐵/data/clean_data_20frames/A30/images/val/1555_curve_13_frame0314.jpg')
