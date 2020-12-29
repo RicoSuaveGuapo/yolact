@@ -15,6 +15,9 @@ if uid == 'rico-li':
     pth_path = 'weights/yolact_base_454_30000.pth'          # with all kinds and loss ratio 1:  6:6.125
     # pth_path = 'weights/yolact_base_4761_114285.pth'      # with only A30 and loss ratio 1:  6:6.125
     # pth_path = 'weights/yolact_plus_base_1731_114285.pth' # all kinds yolact++ and 1:6:6.125
+
+    # GAN YOLACT
+    # pth_path = 'weights/yolact_base_31_30892_interrupt.pth'
     
     # Quantitative evaluation
     if kind != 'All':
@@ -47,7 +50,7 @@ elif uid == 'root':
 
 # ===== train =====
 # Local
-# os.system('python -W ignore train_gan_server.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=1 --validation_epoch=16')
+os.system('python -W ignore train_gan_server.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=4 --validation_epoch=16')
 
 # Server Dell
 # python -W ignore train.py --config=yolact_base_config --batch_size=24 --batch_alloc=24 --dataset metal2020_server_dataset --validation_epoch=16
@@ -60,12 +63,12 @@ elif uid == 'root':
 # os.system("nohup python -W ignore train.py --resume --config=yolact_base_config --batch_size=48 --batch_alloc=24,24 --dataset metal2020_server_dgx_dataset --validation_epoch=16 > train.log 2>&1 & ")
 
 # resume training
-os.system(f"python -W ignore train_gan_server.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=2 --resume {pth_path} --validation_epoch=16")
+# os.system(f"python -W ignore train_gan_server.py --config=yolact_base_config --dataset metal2020_dataset --batch_size=2 --resume {pth_path} --validation_epoch=16")
 
 
 # ===== eval =====
 # Quantitative evaluation
-# os.system(f"python -W ignore eval.py --max_images 1 --no_bar --trained_model={pth_path} --config {config} --display_fps --fast_nms False")
+# os.system(f"python -W ignore eval.py --trained_model={pth_path} --config {config} --display_fps --fast_nms False")
 #
 # Output json file
 # os.system(f"python -W ignore eval.py --trained_model={pth_path} --output_coco_json")

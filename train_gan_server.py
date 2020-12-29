@@ -23,6 +23,7 @@ import torch.utils.data as data
 from torch.autograd import Variable
 from torch.nn.functional import interpolate
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.cuda.amp import autocast
 
 # Oof
 import eval as eval_script
@@ -33,7 +34,7 @@ from utils.augmentations import BaseTransform, SSDAugmentation
 from utils.functions import MovingAverage, SavePath
 from utils.logger import Log
 from yolact import Discriminator, Discriminator_StandFord, Discriminator_Dcgan, Discriminator_Wgan, Yolact
-from criterion_dis import DiscriminatorLoss
+from criterion_dis import DiscriminatorLoss_Wgan, DiscriminatorLoss_Maskrcnn, GeneratorLoss_Maskrcnn
 
 
 def str2bool(v):
@@ -50,7 +51,7 @@ parser.add_argument('--resume', default=None, type=str,
 parser.add_argument('--start_iter', default=-1, type=int,
                     help='Resume training at this iter. If this is -1, the iteration will be'\
                          'determined from the file name.')
-parser.add_argument('--num_workers', default=4, type=int,
+parser.add_argument('--num_workers', default=40, type=int,
                     help='Number of workers used in dataloading')
 parser.add_argument('--cuda', default=True, type=str2bool,
                     help='Use CUDA to train model')
@@ -156,6 +157,8 @@ class NetLoss(nn.Module):
         self.criterion = criterion
     
     # one can also check the output format of the dataset
+    # NOTE: for AMP
+    @autocast()
     def forward(self, images, targets, masks, num_crowds):
         preds = self.net(images)
         if self.pred_seg:
@@ -174,9 +177,14 @@ class CustomDataParallel(nn.DataParallel):
     def scatter(self, inputs, kwargs, device_ids):
         # More like scatter and data prep at the same time. The point is we prep the data in such a way
         # that no scatter is necessary, and there's no need to shuffle stuff around different GPUs.
+        # device_ids: [0,1]
         devices = ['cuda:' + str(x) for x in device_ids]
         splits = prepare_data(inputs[0], devices, allocation=args.batch_alloc)
-
+        # splits = (split_images, split_targets, split_masks, split_numcrowds)
+        
+        # Example
+        # [[split_images, split_targets, split_masks, split_numcrowds],
+        #   [split_images, split_targets, split_masks, split_numcrowds]], [kwargs]*2
         return [[split[device_idx] for split in splits] for device_idx in range(len(devices))], \
             [kwargs] * len(devices)
 
@@ -204,7 +212,22 @@ class CustomDataParallel(nn.DataParallel):
                 # k is the key of output
                 out[k] = torch.stack([output[k].to(output_device) for output in outputs])
         
+    
+    
             return out
+
+def gan_data_parallel(module, input, device_ids, output_device=None):
+    if not device_ids:
+        return module(input)
+
+    if output_device is None:
+        output_device = device_ids[0]
+    # replicate the model
+    replicas = nn.parallel.replicate(module, device_ids)
+    outputs  = nn.parallel.parallel_apply(replicas, inputs)
+    # concatenate the output from GPUs
+    return nn.parallel.gather(outputs, output_device)
+
             
 # NOTE
 def gan_init(mod):
@@ -233,6 +256,7 @@ def freeze_pretrain(model, freeze=True):
             par.requires_grad = True
 
 def seg_mask_clas(seg_list, pred_list, datum):
+    # FIXME:
     # Since the datapararrel will distribute the data to 
     # multiple GPUs, we will put them all into cuda:0
     cuda0 = torch.device('cuda:0')
@@ -327,8 +351,9 @@ def train():
     if cfg.pred_seg:
         dis_size = 138
         dis_net  = Discriminator_Wgan(i_size = dis_size, s_size = dis_size)
+        # Change the initialization inside the dis_net class inside 
         # set the dis net's initial parameter values
-        dis_net.apply(gan_init)
+        # dis_net.apply(gan_init)
         dis_net.train()
         print('--- Discriminator created! ---\n')
 
@@ -367,6 +392,23 @@ def train():
     optimizer_gen     = Ranger(net.parameters(), lr = args.lr, weight_decay=args.decay)
     # optimizer_gen = optim.RMSprop(net.parameters(), lr = args.lr)
 
+    # FIXME: Might need to modify the lr in the optimizer carefually
+    # check this
+    # def make_D_optimizer(cfg, model):
+    # params = []
+    # for key, value in model.named_parameters():
+    #     if not value.requires_grad:
+    #         continue
+    #     lr = cfg.SOLVER.BASE_LR/5.0
+    #     weight_decay = cfg.SOLVER.WEIGHT_DECAY
+    #     if "bias" in key:
+    #         lr = cfg.SOLVER.BASE_LR * cfg.SOLVER.BIAS_LR_FACTOR/5.0
+    #         weight_decay = cfg.SOLVER.WEIGHT_DECAY_BIAS
+    #     params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
+
+    # optimizer = torch.optim.SGD(params, lr, momentum=cfg.SOLVER.MOMENTUM)
+    # return optimizer
+
     if cfg.pred_seg:
         optimizer_dis = optim.SGD(dis_net.parameters(), lr=cfg.dis_lr)
         # optimizer_dis = optim.RMSprop(dis_net.parameters(), lr = cfg.dis_lr)
@@ -379,10 +421,12 @@ def train():
 
     # criterion_dis = nn.BCELoss()
     # Take the advice from WGAN
-    criterion_dis = DiscriminatorLoss()
+    criterion_dis = DiscriminatorLoss_Maskrcnn()
+    criterion_gen = GeneratorLoss_Maskrcnn()
 
 
     if args.batch_alloc is not None:
+        # e.g. args.batch_alloc: 24,24
         args.batch_alloc = [int(x) for x in args.batch_alloc.split(',')]
         if sum(args.batch_alloc) != args.batch_size:
             print('Error: Batch allocation (%s) does not sum to batch size (%s).' % (args.batch_alloc, args.batch_size))
@@ -394,8 +438,8 @@ def train():
         net     = net.cuda()
         # NOTE
         if cfg.pred_seg:
-            dis_net = dis_net.cuda()
             dis_net = nn.DataParallel(dis_net)
+            dis_net = dis_net.cuda()
     
     # Initialize everything
     if not cfg.freeze_bn: yolact_net.freeze_bn() # Freeze bn so we don't kill our means
@@ -433,12 +477,18 @@ def train():
                       # TODO: global command can modify global variable inside of the function.
     loss_avgs  = { k: MovingAverage(100) for k in loss_types }
 
+    # NOTE
+    # Enable AMP
+    amp_enable = cfg.amp
+    scaler = torch.cuda.amp.GradScaler(enabled=amp_enable)
+
     print('Begin training!')
     print()
     # try-except so you can use ctrl+c to save early and stop training
     try:
         for epoch in range(num_epochs):
             # Resume from start_iter
+
             if (epoch+1)*epoch_size < iteration:
                 continue
             
@@ -446,7 +496,7 @@ def train():
                 # Stop if we've reached an epoch if we're resuming from start_iter
                 if iteration == (epoch+1)*epoch_size:
                     break
-
+      
                 # Stop at the configured number of iterations even if mid-epoch
                 if iteration == cfg.max_iter:
                     break
@@ -479,10 +529,11 @@ def train():
                 # NOTE
                 if cfg.pred_seg:
                     # ====== GAN Train ======
-                    # train the gen and dis in different iteration count
+                    # train the gen and dis in different iteration
                     # it_alter_period = iteration % (cfg.gen_iter + cfg.dis_iter)
+                    # FIXME:
+                    # present_time = time.time()
                     for _ in range(cfg.dis_iter):
-                        optimizer_dis.zero_grad()
                         # freeze_pretrain(yolact_net, freeze=False)
                         # freeze_pretrain(net, freeze=False)
                         # freeze_pretrain(dis_net, freeze=False)
@@ -490,118 +541,186 @@ def train():
                         #     print('--- Generator     freeze   ---')
                         #     print('--- Discriminator training ---')
 
-                        # ----- Discriminator part -----
-                        # seg_list  is the prediction mask
-                        # can be regarded as generated images from YOLACT
-                        # pred_list is the prediction label
-                        # seg_list  dim: list of (138,138,instances)
-                        # pred_list dim: list of (instances)
-                        losses, seg_list, pred_list = net(datum)
-                        seg_clas, mask_clas, b, seg_size = seg_mask_clas(seg_list, pred_list, datum)
+                        if cfg.amp:
+                            with torch.cuda.amp.autocast():
+                                # ----- Discriminator part -----
+                                # seg_list  is the prediction mask
+                                # can be regarded as generated images from YOLACT
+                                # pred_list is the prediction label
+                                # seg_list  dim: list of (138,138,instances)
+                                # pred_list dim: list of (instances)
+                                losses, seg_list, pred_list = net(datum)
+                                seg_clas, mask_clas, b, seg_size = seg_mask_clas(seg_list, pred_list, datum)
+                                
+                                # input image size is [b, 3, 550, 550]
+                                # downsample to       [b, 3, seg_h, seg_w]
+                                image_list = [img.to(cuda0) for img in datum[0]]
+                                image    = interpolate(torch.stack(image_list), size = seg_size, 
+                                                            mode='bilinear',align_corners=False)
+
+                                # Because in the discriminator training, we do not 
+                                # want the gradient flow back to the generator part
+                                # we detach seg_clas (mask_clas come the data, does not have grad)
                         
-                        # input image size is [b, 3, 550, 550]
-                        # downsample to       [b, 3, seg_h, seg_w]
-                        image_list = [img.to(cuda0) for img in datum[0]]
-                        image    = interpolate(torch.stack(image_list), size = seg_size, 
-                                                    mode='bilinear',align_corners=False)
+                                output_pred = dis_net(img = image.detach(), seg = seg_clas.detach())
+                                output_grou = dis_net(img = image.detach(), seg = mask_clas.detach())
 
-                        # Because in the discriminator training, we do not 
-                        # want the gradient flow back to the generator part
-                        # we detach seg_clas (mask_clas come the data, does not have grad)
-                        output_pred = dis_net(img = image, seg = seg_clas.detach())
-                        output_grou = dis_net(img = image, seg = mask_clas)
+                                # p = elem_mul_p.squeeze().permute(1,2,0).cpu().detach().numpy()
+                                # g = elem_mul_g.squeeze().permute(1,2,0).cpu().detach().numpy()
+                                # image = image.squeeze().permute(1,2,0).cpu().detach().numpy()
+                                # from PIL import Image
+                                # seg_PIL = Image.fromarray(p, 'RGB')
+                                # mask_PIL = Image.fromarray(g, 'RGB')
+                                # seg_PIL.save('mul_seg.png')
+                                # mask_PIL.save('mul_mask.png')
+                                # raise RuntimeError
 
-                        # p = elem_mul_p.squeeze().permute(1,2,0).cpu().detach().numpy()
-                        # g = elem_mul_g.squeeze().permute(1,2,0).cpu().detach().numpy()
-                        # image = image.squeeze().permute(1,2,0).cpu().detach().numpy()
-                        # from PIL import Image
-                        # seg_PIL = Image.fromarray(p, 'RGB')
-                        # mask_PIL = Image.fromarray(g, 'RGB')
-                        # seg_PIL.save('mul_seg.png')
-                        # mask_PIL.save('mul_mask.png')
-                        # raise RuntimeError
+                                # from matplotlib import pyplot as plt
+                                # fig, (ax1, ax2) = plt.subplots(1,2)
+                                # ax1.imshow(mask_show)
+                                # ax2.imshow(seg_show)
+                                # plt.show(block=False)
+                                # plt.pause(2)
+                                # plt.close()  
 
-                        # from matplotlib import pyplot as plt
-                        # fig, (ax1, ax2) = plt.subplots(1,2)
-                        # ax1.imshow(mask_show)
-                        # ax2.imshow(seg_show)
-                        # plt.show(block=False)
-                        # plt.pause(2)
-                        # plt.close()  
+                                # if iteration % (cfg.gen_iter + cfg.dis_iter) == 0:
+                                #     print(f'Probability of fake is fake: {output_pred.mean().item():.2f}')
+                                #     print(f'Probability of real is real: {output_grou.mean().item():.2f}')
 
-                        # if iteration % (cfg.gen_iter + cfg.dis_iter) == 0:
-                        #     print(f'Probability of fake is fake: {output_pred.mean().item():.2f}')
-                        #     print(f'Probability of real is real: {output_grou.mean().item():.2f}')
+                                # 0 for Fake/Generated
+                                # 1 for True/Ground Truth
+                                # fake_label = torch.zeros(b)
+                                # real_label = torch.ones(b)
 
-                        # 0 for Fake/Generated
-                        # 1 for True/Ground Truth
-                        # fake_label = torch.zeros(b)
-                        # real_label = torch.ones(b)
+                                # Advice of practical implementation 
+                                # from https://arxiv.org/abs/1611.08408
+                                # loss_pred = -criterion_dis(output_pred,target=real_label)
+                                # loss_pred = criterion_dis(output_pred,target=fake_label)
+                                # loss_grou = criterion_dis(output_grou,target=real_label)
+                                # loss_dis  = loss_pred + loss_grou
 
-                        # Advice of practical implementation 
-                        # from https://arxiv.org/abs/1611.08408
-                        # loss_pred = -criterion_dis(output_pred,target=real_label)
-                        # loss_pred = criterion_dis(output_pred,target=fake_label)
-                        # loss_grou = criterion_dis(output_grou,target=real_label)
-                        # loss_dis  = loss_pred + loss_grou
+                                # Wasserstein Distance (Earth-Mover)
+                                loss_dis = criterion_dis(input=output_grou,target=output_pred)
+                            
+                            # Backprop the discriminator
+                            # Scales loss. Calls backward() on scaled loss to create scaled gradients.
+                            scaler.scale(loss_dis).backward()
+                            scaler.step(optimizer_dis)
+                            scaler.update()
+                            optimizer_dis.zero_grad()
 
-                        # Wasserstein Distance (Earth-Mover)
-                        loss_dis = criterion_dis(input=output_grou,target=output_pred)
+                            # clip the updated parameters
+                            _ = [par.data.clamp_(-cfg.clip_value, cfg.clip_value) for par in dis_net.parameters()]
+
+
+                            # ----- Generator part -----
+                            # freeze_pretrain(yolact_net, freeze=False)
+                            # freeze_pretrain(net, freeze=False)
+                            # freeze_pretrain(dis_net, freeze=False)
+                            # if it_alter_period == (cfg.dis_iter+1):
+                            #     print('--- Generator     training ---')
+                            #     print('--- Discriminator freeze   ---')
+
+                            # FIXME:
+                            # print(f'dis time pass: {time.time()-present_time:.2f}')
+                            # FIXME:
+                            # present_time = time.time()
+
+                            with torch.cuda.amp.autocast():
+                                losses, seg_list, pred_list = net(datum)
+                                seg_clas, mask_clas, b, seg_size = seg_mask_clas(seg_list, pred_list, datum)
+                                image_list = [img.to(cuda0) for img in datum[0]]
+                                image      = interpolate(torch.stack(image_list), size = seg_size, 
+                                                            mode='bilinear',align_corners=False)
+                                # Perform forward pass of all-fake batch through D
+                                # NOTE this seg_clas CANNOT detach, in order to flow the 
+                                # gradient back to the generator
+                                # output = dis_net(img = image, seg = seg_clas)
+                                # Since the log(1-D(G(x))) not provide sufficient gradients
+                                # We want log(D(G(x)) instead, this can be achieve by
+                                # use the real_label as target.
+                                # This step is crucial for the information of discriminator
+                                # to go into the generator.
+                                # Calculate G's loss based on this output
+                                # real_label = torch.ones(b)
+                                # loss_gen   = criterion_dis(output,target=real_label)
+                            
+                                # GAN MaskRCNN
+                                output_pred = dis_net(img = image, seg = seg_clas)
+                                output_grou = dis_net(img = image, seg = mask_clas)
+
+                                # Advice from WGAN
+                                # loss_gen = -torch.mean(output)
+                                loss_gen = criterion_gen(input=output_grou,target=output_pred)
+
+                                # since the dis is already freeze, the gradients will only
+                                # record the YOLACT
+                                losses = { k: (v).mean() for k,v in losses.items() } # Mean here because Dataparallel
+                                loss = sum([losses[k] for k in losses])
+                                loss += loss_gen
+                            
+                            # Generator backprop
+                            scaler.scale(loss).backward()
+                            scaler.step(optimizer_gen)
+                            scaler.update()
+                            optimizer_gen.zero_grad()
+                            
+
+                            # FIXME:
+                            # print(f'gen time pass: {time.time()-present_time:.2f}')
+                            # print('GAN part over')
+
+                        else:
+                            losses, seg_list, pred_list = net(datum)
+                            seg_clas, mask_clas, b, seg_size = seg_mask_clas(seg_list, pred_list, datum)
+
+                            image_list = [img.to(cuda0) for img in datum[0]]
+                            image    = interpolate(torch.stack(image_list), size = seg_size, 
+                                                        mode='bilinear',align_corners=False)
+
+                            output_pred = dis_net(img = image.detach(), seg = seg_clas.detach())
+                            output_grou = dis_net(img = image.detach(), seg = mask_clas.detach())
+                            loss_dis = criterion_dis(input=output_grou,target=output_pred)
+
+                            loss_dis.backward()
+                            optimizer_dis.step()
+                            optimizer_dis.zero_grad()
+                            _ = [par.data.clamp_(-cfg.clip_value, cfg.clip_value) for par in dis_net.parameters()]
                         
-                        # TODO: Grid Search this one
-                        # lambda_dis = cfg.lambda_dis
-                        # loss_dis   = lambda_dis*loss_dis
-                        # Backprop of the discriminator
-                        loss_dis.backward()
-                        optimizer_dis.step()
-                        
-                        # clip the updated parameters
-                        for par in dis_net.parameters():
-                            par.data.clamp_(-cfg.clip_value, cfg.clip_value)
+                            # ----- Generator part -----
+                            # FIXME:
+                            # print(f'dis time pass: {time.time()-present_time:.2f}')
+                            # FIXME:
+                            # present_time = time.time()
 
-                    losses = { k: (v).mean() for k,v in losses.items() } # Mean here because Dataparallel
-                    loss = sum([losses[k] for k in losses])
+                            losses, seg_list, pred_list = net(datum)
+                            seg_clas, mask_clas, b, seg_size = seg_mask_clas(seg_list, pred_list, datum)
+                            image_list = [img.to(cuda0) for img in datum[0]]
+                            image      = interpolate(torch.stack(image_list), size = seg_size, 
+                                                        mode='bilinear',align_corners=False)
+                                                        
+                            # GAN MaskRCNN
+                            output_pred = dis_net(img = image, seg = seg_clas)
+                            output_grou = dis_net(img = image, seg = mask_clas)
 
-                    # ----- Generator part -----
-                    # freeze_pretrain(yolact_net, freeze=False)
-                    # freeze_pretrain(net, freeze=False)
-                    # freeze_pretrain(dis_net, freeze=False)
-                    # if it_alter_period == (cfg.dis_iter+1):
-                    #     print('--- Generator     training ---')
-                    #     print('--- Discriminator freeze   ---')
-                    optimizer_gen.zero_grad()
-                    losses, seg_list, pred_list = net(datum)
-                    seg_clas, mask_clas, b, seg_size = seg_mask_clas(seg_list, pred_list, datum)
-                    image_list = [img.to(cuda0) for img in datum[0]]
-                    image      = interpolate(torch.stack(image_list), size = seg_size, 
-                                                mode='bilinear',align_corners=False)
-                    # Perform forward pass of all-fake batch through D
-                    # NOTE that seg_clas CANNOT detach, in order to flow the 
-                    # gradient back to the generator
-                    output = dis_net(img = image, seg = seg_clas)
-                    # Since the log(1-D(G(x))) not provide sufficient gradients
-                    # We want log(D(G(x)) instead, this can be achieve by
-                    # use the real_label as target.
-                    # This step is crucial for the information of discriminator
-                    # to go into the generator.
-                    # Calculate G's loss based on this output
-                    # real_label = torch.ones(b)
-                    # loss_gen   = criterion_dis(output,target=real_label)
+                            loss_gen = criterion_gen(input=output_grou,target=output_pred)
 
-                    # Advice from WGAN
-                    loss_gen = -torch.mean(output)
+                            # since the dis is already freeze, the gradients will only
+                            # record the YOLACT
+                            losses = { k: (v).mean() for k,v in losses.items() } # Mean here because Dataparallel
+                            loss = sum([losses[k] for k in losses])
+                            loss += loss_gen
+                            loss.backward()
+                            # Do this to free up vram even if loss is not finite
+                            optimizer_gen.zero_grad()
+                            if torch.isfinite(loss).item():
+                                # since the optimizer_gen is for YOLACT only
+                                # only the gen will be updated
+                                optimizer_gen.step()       
 
-                    # since the dis is already freeze, the gradients will only
-                    # record the YOLACT
-                    loss_gen.backward()
-                    # Do this to free up vram even if loss is not finite
-                    losses = { k: (v).mean() for k,v in losses.items() } # Mean here because Dataparallel
-                    loss = sum([losses[k] for k in losses])
-                    if torch.isfinite(loss).item():
-                        # since the optimizer_gen is for YOLACT only
-                        # only the gen will be updated
-                        optimizer_gen.step()       
-                
+                            # FIXME:
+                            # print(f'gen time pass: {time.time()-present_time:.2f}')
+                            # print('GAN part over')
                 else:
                     # ====== Normal YOLACT Train ======
                     # Zero the grad to get ready to compute gradients
@@ -619,8 +738,9 @@ def train():
                         optimizer_gen.step()                    
                 
                 # Add the loss to the moving average for bookkeeping
-                for k in losses:
-                    loss_avgs[k].add(losses[k].item())
+                _ = [loss_avgs[k].add(losses[k].item()) for k in losses]
+                # for k in losses:
+                #     loss_avgs[k].add(losses[k].item())
 
                 cur_time  = time.time()
                 elapsed   = cur_time - last_time
@@ -638,7 +758,7 @@ def train():
                     if cfg.pred_seg:
                         print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || ETA: %s || timer: %.3f')
                                 % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
-                        print(f'Generator loss: {loss_gen:.2f} | Discriminator loss: {loss_dis:.2f}')
+                        # print(f'Generator loss: {loss_gen:.2f} | Discriminator loss: {loss_dis:.2f}')
                     # Loss Key:
                     #  - B: Box Localization Loss
                     #  - C: Class Confidence Loss
@@ -750,12 +870,19 @@ def gradinator(x):
     x.requires_grad = False
     return x
 
+# splits = prepare_data(inputs[0], devices, allocation=args.batch_alloc)
+# example inputs
+# inputs[0]  : 'detection' key's value
+# devices    : ['cuda:0','cuda:1']
+# allocation : [24,24]
 def prepare_data(datum, devices:list=None, allocation:list=None):
     with torch.no_grad():
         if devices is None:
             devices = ['cuda:0'] if args.cuda else ['cpu']
         if allocation is None:
+            # e.g [48/2]*1
             allocation = [args.batch_size // len(devices)] * (len(devices) - 1)
+            # [24,24]
             allocation.append(args.batch_size - sum(allocation)) # The rest might need more/less
         
         images, (targets, masks, num_crowds) = datum

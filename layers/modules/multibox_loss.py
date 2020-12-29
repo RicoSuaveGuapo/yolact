@@ -7,6 +7,7 @@ from ..box_utils import match, log_sum_exp, decode, center_size, crop, elemwise_
 
 from data import cfg, mask_type, activation_func
 
+
 class MultiBoxLoss(nn.Module):
     """SSD Weighted Loss Function
     Compute Targets:
@@ -244,7 +245,11 @@ class MultiBoxLoss(nn.Module):
             with torch.no_grad():
                 downsampled_masks = F.interpolate(mask_t[idx].unsqueeze(0), (mask_h, mask_w),
                                                   mode=interpolation_mode, align_corners=False).squeeze(0)
-                downsampled_masks = downsampled_masks.gt(0.5).float()
+                # NOTE
+                if cfg.amp:
+                    downsampled_masks = downsampled_masks.gt(0.5).half()
+                else:
+                    downsampled_masks = downsampled_masks.gt(0.5).float()
                 
                 # Construct Semantic Segmentation
                 segment_t = torch.zeros_like(cur_segment, requires_grad=False)

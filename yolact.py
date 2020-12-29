@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from torchvision.models.resnet import Bottleneck
+from torch.cuda.amp import autocast
 
 from backbone import construct_backbone
 from data.config import cfg, mask_type
@@ -312,6 +313,7 @@ class Discriminator_Wgan(nn.Module):
         '''
         # I assume they are the same
         assert i_size == s_size, "image size and segmentation/ground size are not the same"
+        # the default input size is 1*138*138
 
         super().__init__()
         i_channel = [64]
@@ -323,11 +325,13 @@ class Discriminator_Wgan(nn.Module):
         self.conv1_i = nn.Conv2d(in_channels=in_channels,  out_channels=i_channel[0], kernel_size=i_kernel[0], bias=False)
         self.conv1_s = nn.Conv2d(in_channels=num_classes,  out_channels=s_channel[0], kernel_size=i_kernel[0], bias=False)
 
-        self.conv1_c = nn.Conv2d(in_channels=3, out_channels=c_channel[0], kernel_size=c_kernel[0], bias=False)
+        # self.conv1_c = nn.Conv2d(in_channels=3, out_channels=c_channel[0], kernel_size=c_kernel[0], bias=False)
+        self.conv1_c = nn.Conv2d(in_channels=i_channel[0] + s_channel[0], out_channels=c_channel[0], kernel_size=c_kernel[0], bias=False)
         self.conv2_c = nn.Conv2d(in_channels=c_channel[0], out_channels=c_channel[1], kernel_size=c_kernel[1], bias=False)
         self.conv3_c = nn.Conv2d(in_channels=c_channel[1], out_channels=c_channel[2], kernel_size=c_kernel[2], bias=False)
         self.conv4_c = nn.Conv2d(in_channels=c_channel[2], out_channels=c_channel[3], kernel_size=c_kernel[3], bias=False)
-        self.conv5_c = nn.Conv2d(in_channels=c_channel[1], out_channels=c_channel[4], kernel_size=c_kernel[4], bias=False)
+        self.conv5_c = nn.Conv2d(in_channels=c_channel[3], out_channels=c_channel[4], kernel_size=c_kernel[4], bias=False)
+        # self.conv5_c = nn.Conv2d(in_channels=c_channel[1], out_channels=c_channel[4], kernel_size=c_kernel[4], bias=False)
 
         self.bni     = nn.BatchNorm2d(num_features=i_channel[0])
         self.bns     = nn.BatchNorm2d(num_features=s_channel[0])
@@ -338,36 +342,49 @@ class Discriminator_Wgan(nn.Module):
         self.bn4c    = nn.BatchNorm2d(num_features=c_channel[3])
         self.bn5c    = nn.BatchNorm2d(num_features=c_channel[4])
 
-        self.maxpool = nn.MaxPool2d(3)
+        # FIXME: This step may lose a lot of info
         self.Adapool = nn.AdaptiveAvgPool2d((3,3))
         # NOTE
         self.act     = nn.LeakyReLU(0.2, inplace=True)
         # take the advice from WGAN
         # self.finalact= nn.Sigmoid()
+
+        # Taken from gan_mask_rcnn
+        for m in self.modules():
+            
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, sqrt(2. / n))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.normal_(1.0, 0.02)
+                m.bias.data.zero_()
     
     def forward(self, img, seg):
         x1 = img # original image
         x2 = seg # could be ground truth or prediction
         
-        elem_mul = x1*x2
+        # elem_mul = x1*x2
 
         # img
-        # x1 = self.bni(self.conv1_i(x1))
-        # x1 = self.act(x1)
+        x1 = self.bni(self.conv1_i(x1))
+        x1 = self.act(x1)
         
         # seg
-        # x2 = self.bns(self.conv1_s(x2))
-        # x2 = self.act(x2)
+        x2 = self.bns(self.conv1_s(x2))
+        x2 = self.act(x2)
         
         # NOTE
         # elem_mul = x1*x2
-        # concat = torch.cat([x1, x2], dim=1)
+        concat = torch.cat([x1, x2], dim=1)
         
-        # c = self.act(self.bn1c(self.conv1_c(concat)))
-        c = self.act(self.bn1c(self.conv1_c(elem_mul)))
+        c = self.act(self.bn1c(self.conv1_c(concat)))
+        # c = self.act(self.bn1c(self.conv1_c(elem_mul)))
+        c = self.act(self.bn1c(self.conv1_c(c)))
         c = self.act(self.bn2c(self.conv2_c(c)))
-        # c = self.act(self.bn3c(self.conv3_c(c)))
-        # c = self.act(self.bn4c(self.conv4_c(c)))
+        c = self.act(self.bn3c(self.conv3_c(c)))
+        c = self.act(self.bn4c(self.conv4_c(c)))
 
         c = self.Adapool(c)
         c = self.conv5_c(c)
@@ -376,6 +393,90 @@ class Discriminator_Wgan(nn.Module):
         
         # return elem_mul, c
         return c
+
+
+class Discriminator_MRCNNgan(nn.Module):
+    def __init__(self, i_size, s_size, num_classes=1, in_channels = 3):
+
+        '''
+        0 for Fake/Generated
+        1 for True/Ground Truth
+
+        num_classes: number of classes (for seg branch)
+        in_channels: number of channels (for original image)
+        '''
+        # I assume they are the same
+        assert i_size == s_size, "image size and segmentation/ground size are not the same"
+        # the default input size is 1*138*138
+
+        super().__init__()
+        i_channel = [64]
+        s_channel = [64]
+        c_channel = [128,256,512,1024]
+
+        i_kernel  = [5]
+        i_stride  = [3]
+        c_kernel  = [4,4,4,3]
+        c_stride  = [2,2,2,2]
+
+        self.conv1_i = nn.Conv2d(in_channels,  i_channel[0], i_kernel[0], i_stride[0], bias=False)
+        self.conv1_s = nn.Conv2d(num_classes,  s_channel[0], i_kernel[0], i_stride[0], bias=False)
+
+        self.conv1_c = nn.Conv2d(i_channel[0], c_channel[0], c_kernel[0], c_stride[0], bias=False)
+        self.conv2_c = nn.Conv2d(c_channel[0], c_channel[1], c_kernel[1], c_stride[1], bias=False)
+        self.conv3_c = nn.Conv2d(c_channel[1], c_channel[2], c_kernel[2], c_stride[2], bias=False)
+        self.conv4_c = nn.Conv2d(c_channel[2], c_channel[3], c_kernel[3], c_stride[3], bias=False)
+
+        self.bni     = nn.BatchNorm2d(num_features=i_channel[0])
+        self.bns     = nn.BatchNorm2d(num_features=s_channel[0])
+
+        self.bn1c    = nn.BatchNorm2d(num_features=c_channel[0])
+        self.bn2c    = nn.BatchNorm2d(num_features=c_channel[1])
+        self.bn3c    = nn.BatchNorm2d(num_features=c_channel[2])
+        self.bn4c    = nn.BatchNorm2d(num_features=c_channel[3])
+
+        self.act     = nn.LeakyReLU(0.2, inplace=True)
+
+        # Taken from gan_mask_rcnn
+        for m in self.modules():
+            
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, sqrt(2. / n))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.normal_(1.0, 0.02)
+                m.bias.data.zero_()
+    # NOTE: for AMP
+    @autocast()
+    def forward(self, img, seg):
+        batch = img.size(0)
+        x1 = img # original image
+        x2 = seg # could be ground truth or prediction
+        # img
+        x1 = self.act(self.bni(self.conv1_i(x1)))
+        # seg
+        x2 = self.act(self.bns(self.conv1_s(x2)))
+
+        # elementwise multiplication
+        elem_mul = x1*x2
+        # print(elem_mul.size())
+        c1 = self.act(self.bn1c(self.conv1_c(elem_mul)))
+        # print(c1.size())
+        c2 = self.act(self.bn2c(self.conv2_c(c1)))
+        # print(c2.size())
+        c3 = self.act(self.bn3c(self.conv3_c(c2)))
+        # print(c3.size())
+        c4 = self.act(self.bn4c(self.conv4_c(c3)))
+        # print(c4.size())
+        # the coefficients here are becase deeper the layer, the fewer size of feature map
+        # the coefficients can help deeper layer be noted.
+        output = torch.cat((elem_mul.view(batch,-1), 1*c1.view(batch,-1),\
+                            2*c2.view(batch,-1), 3*c3.view(batch,-1), 4*c4.view(batch,-1)),1)
+        # torch.Size([2, 212416])
+
+        return output
 
 
 class Concat(nn.Module):
@@ -916,6 +1017,8 @@ class Yolact(nn.Module):
                 module.weight.requires_grad = enable
                 module.bias.requires_grad = enable
     
+    # NOTE: for AMP
+    @autocast()
     def forward(self, x):
         """ The input should be of size [batch_size, 3, img_h, img_w] """
         _, _, img_h, img_w = x.size()
@@ -1381,4 +1484,9 @@ if __name__ == '__main__':
     #         preds = net(batch)
     #         print(preds[0].keys())
     #         break
+
+    img = torch.randn([2,3,138,138])
+    seg = torch.randn([2,1,138,138])
+    dis_net = Discriminator_MRCNNgan(i_size=138, s_size=138)
+    dis_net(img, seg)
 

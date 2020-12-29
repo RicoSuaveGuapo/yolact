@@ -163,10 +163,10 @@ metal2020_server_dataset = dataset_base.copy({
 
 metal2020_server_dgx_dataset = dataset_base.copy({
     'name': 'Metal Curve 2020',
-    'train_images': '/nfs/Workspace/yolact_train',
-    'train_info':   '/nfs/Workspace/yolact_train/annotations.json',
-    'valid_images': '/nfs/Workspace/yolact_val',
-    'valid_info':   '/nfs/Workspace/yolact_val/annotations.json',
+    'train_images': '/nfs/Workspace/YOLACT/data/yolact_train',
+    'train_info':   '/nfs/Workspace/YOLACT/data/yolact_train/annotations.json',
+    'valid_images': '/nfs/Workspace/YOLACT/data/yolact_val',
+    'valid_info':   '/nfs/Workspace/YOLACT/data/yolact_val/annotations.json',
     'has_gt': True,
     'class_names': METAL_CLASSES,
     'label_map': METAL_LABEL_MAP
@@ -721,6 +721,14 @@ yolact_base_config = coco_base_config.copy({
     'dis_lr': 5E-5,
     # clip value for WGAN
     'clip_value': 0.1,
+
+    # NOTE: Training Optimization
+    # Automatic Mixed Precision
+    'amp': True,
+    # since binary_cross_entropy is danger for autocast
+    # we change the activation to none,
+    # the loss is then changed to smooth_l1_loss
+    'mask_proto_mask_activation': activation_func.none,
 
     # Dataset stuff
     # NOTE: Original
